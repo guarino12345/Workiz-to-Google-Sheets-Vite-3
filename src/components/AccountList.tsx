@@ -18,6 +18,8 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -87,6 +89,9 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
           sourceFilter: editingAccount.sourceFilter,
           googleSheetsId: editingAccount.googleSheetsId,
           defaultConversionValue: editingAccount.defaultConversionValue,
+          syncEnabled: editingAccount.syncEnabled,
+          syncFrequency: editingAccount.syncFrequency,
+          syncTime: editingAccount.syncTime,
         }),
       });
 
@@ -231,6 +236,11 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
                   <Typography component="span" variant="body2" color="text.secondary">
                     Default Conversion Value: ${account.defaultConversionValue}
                   </Typography>
+                  <br />
+                  <Typography component="span" variant="body2" color="text.secondary">
+                    Auto Sync: {account.syncEnabled ? 'Enabled' : 'Disabled'}
+                    {account.syncEnabled && ` (${account.syncFrequency} at ${account.syncTime})`}
+                  </Typography>
                 </>
               }
             />
@@ -273,7 +283,60 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
             fullWidth
             value={editingAccount?.defaultConversionValue || 0}
             onChange={handleDefaultConversionValueChange}
+            sx={{ mb: 2 }}
           />
+          
+          {/* Scheduling Section */}
+          <Typography variant="h6" gutterBottom sx={{ mt: 3, mb: 2 }}>
+            Automated Sync Settings
+          </Typography>
+
+          <FormControlLabel
+            control={
+              <Switch
+                checked={editingAccount?.syncEnabled || false}
+                onChange={(e) => setEditingAccount(editingAccount ? {
+                  ...editingAccount,
+                  syncEnabled: e.target.checked
+                } : null)}
+              />
+            }
+            label="Enable Automated Syncing"
+            sx={{ mb: 2 }}
+          />
+
+          {editingAccount?.syncEnabled && (
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <FormControl sx={{ minWidth: 200, flex: 1 }}>
+                <InputLabel>Sync Frequency</InputLabel>
+                <Select
+                  value={editingAccount?.syncFrequency || 'daily'}
+                  label="Sync Frequency"
+                  onChange={(e) => setEditingAccount(editingAccount ? {
+                    ...editingAccount,
+                    syncFrequency: e.target.value as any
+                  } : null)}
+                >
+                  <MenuItem value="daily">Daily</MenuItem>
+                  <MenuItem value="weekly">Weekly</MenuItem>
+                  <MenuItem value="monthly">Monthly</MenuItem>
+                  <MenuItem value="custom">Custom</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField
+                sx={{ minWidth: 200, flex: 1 }}
+                label="Sync Time"
+                type="time"
+                value={editingAccount?.syncTime || '09:00'}
+                onChange={(e) => setEditingAccount(editingAccount ? {
+                  ...editingAccount,
+                  syncTime: e.target.value
+                } : null)}
+                InputLabelProps={{ shrink: true }}
+                helperText="Time to run sync (24-hour format)"
+              />
+            </Box>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCancel}>Cancel</Button>
