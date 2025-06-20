@@ -33,7 +33,6 @@ interface JobListProps {
 
 const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
-  const [jobs, setJobs] = useState<Job[]>([]);
   const [allJobs, setAllJobs] = useState<Job[]>([]); // Store all jobs for counting
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
@@ -63,20 +62,6 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     };
     fetchAllJobs();
   }, [accounts, syncing]);
-
-  // Filter jobs for selected account
-  useEffect(() => {
-    if (!selectedAccount?.id) {
-      setJobs([]);
-      return;
-    }
-    
-    setLoading(true);
-    // Filter jobs for the selected account from allJobs using accountId
-    const filtered = allJobs.filter((job: Job) => String(job.accountId) === String(selectedAccount.id));
-    setJobs(filtered);
-    setLoading(false);
-  }, [selectedAccount, allJobs]);
 
   const handleAccountChange = (accountId: string) => {
     if (!accountId) {
