@@ -11,6 +11,7 @@ import {
 } from '@mui/material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
+import SyncHistoryComponent from './SyncHistory';
 
 interface Job {
   UUID: string;
@@ -39,6 +40,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [error, setError] = useState<string>('');
   const [syncing, setSyncing] = useState(false);
   const [syncingToSheets, setSyncingToSheets] = useState(false);
+  const [refreshSyncHistory, setRefreshSyncHistory] = useState(0);
 
   // Set initial selected account only once when component mounts
   useEffect(() => {
@@ -97,9 +99,10 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to sync jobs');
       }
-      // After sync, reload jobs
+      // After sync, reload jobs and refresh sync history
       setSyncing(false);
       setLoading(true);
+      setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
       // Trigger jobs reload
       setTimeout(() => setSyncing(false), 100); // force useEffect
     } catch (err) {
@@ -125,6 +128,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       }
       
       console.log('Sync to sheets successful:', data);
+      setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
     } catch (err) {
       console.error('Sync to sheets error:', err);
       setError(err instanceof Error ? err.message : 'Failed to sync to Google Sheets');
@@ -149,6 +153,15 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         <Typography variant="body2" color="text.secondary">
           Default Conversion Value: ${account.defaultConversionValue}
         </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Auto Sync: {account.syncEnabled ? 'Enabled' : 'Disabled'}
+          {account.syncEnabled && ` (${account.syncFrequency} at ${account.syncTime})`}
+        </Typography>
+        {account.lastSyncDate && (
+          <Typography variant="body2" color="text.secondary">
+            Last Sync: {new Date(account.lastSyncDate).toLocaleString()}
+          </Typography>
+        )}
       </Box>
     );
   };
@@ -226,6 +239,14 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
             </Alert>
           )}
           {error && <Alert severity="error">{error}</Alert>}
+          
+          {/* Sync History Section */}
+          {selectedAccount.id && (
+            <SyncHistoryComponent 
+              accountId={selectedAccount.id} 
+              refreshTrigger={refreshSyncHistory}
+            />
+          )}
         </>
       )}
     </Box>
