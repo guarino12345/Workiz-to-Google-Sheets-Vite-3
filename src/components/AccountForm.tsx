@@ -8,6 +8,7 @@ import {
   CircularProgress,
 } from '@mui/material';
 import { Account } from '../types/index';
+import { buildApiUrl } from '../utils/api';
 
 interface AccountFormProps {
   onSuccess: () => void;
@@ -34,7 +35,7 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
     try {
       setLoading(true);
       setError('');
-      const response = await fetch('http://localhost:3000/api/accounts', {
+      const response = await fetch(buildApiUrl('/api/accounts'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

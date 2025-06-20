@@ -4,6 +4,7 @@ import AccountForm from './AccountForm';
 import AccountList from './AccountList';
 import JobList from './JobList';
 import { Account } from '../types/index';
+import { buildApiUrl } from '../utils/api';
 
 const Dashboard: React.FC = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -12,7 +13,7 @@ const Dashboard: React.FC = () => {
     // Fetch accounts from your API
     const fetchAccounts = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/accounts');
+        const response = await fetch(buildApiUrl('/api/accounts'));
         if (!response.ok) {
           throw new Error('Failed to fetch accounts');
         }
@@ -30,7 +31,7 @@ const Dashboard: React.FC = () => {
     // Refetch accounts when changes occur
     const fetchAccounts = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/accounts');
+        const response = await fetch(buildApiUrl('/api/accounts'));
         if (!response.ok) {
           throw new Error('Failed to fetch accounts');
         }

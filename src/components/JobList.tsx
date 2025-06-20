@@ -10,6 +10,7 @@ import {
   Button,
 } from '@mui/material';
 import { Account } from '../types/index';
+import { buildApiUrl } from '../utils/api';
 
 interface Job {
   UUID: string;
@@ -51,7 +52,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     const fetchAllJobs = async () => {
       if (accounts.length === 0) return;
       try {
-        const response = await fetch('http://localhost:3000/api/jobs');
+        const response = await fetch(buildApiUrl('/api/jobs'));
         if (!response.ok) throw new Error('Failed to fetch jobs from DB');
         const data = await response.json();
         setAllJobs(data);
@@ -89,7 +90,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     try {
       console.log('Syncing jobs for account:', selectedAccount.id);
       const response = await fetch(
-        `http://localhost:3000/api/sync-jobs/${selectedAccount.id}`,
+        buildApiUrl(`/api/sync-jobs/${selectedAccount.id}`),
         { method: 'POST' }
       );
       if (!response.ok) {
@@ -114,7 +115,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     setError('');
     try {
       const response = await fetch(
-        `http://localhost:3000/api/sync-to-sheets/${selectedAccount.id}`,
+        buildApiUrl(`/api/sync-to-sheets/${selectedAccount.id}`),
         { method: 'POST' }
       );
       const data = await response.json();

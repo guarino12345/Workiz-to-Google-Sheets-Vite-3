@@ -23,6 +23,7 @@ import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { Account } from '../types/index';
+import { buildApiUrl } from '../utils/api';
 
 interface AccountListProps {
   accounts: Account[];
@@ -45,7 +46,7 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
         throw new Error('Account ID not found');
       }
 
-      const response = await fetch(`http://localhost:3000/api/accounts/${accountId}`, {
+      const response = await fetch(buildApiUrl(`/accounts/${accountId}`), {
         method: 'DELETE',
       });
 
@@ -76,7 +77,7 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
         throw new Error('Account ID not found');
       }
 
-      const response = await fetch(`http://localhost:3000/api/accounts/${accountId}`, {
+      const response = await fetch(buildApiUrl(`/accounts/${accountId}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
