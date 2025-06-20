@@ -52,26 +52,43 @@ const Dashboard: React.FC = () => {
       </Typography>
       
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-        <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-          <Paper sx={{ p: 2, flex: 1, minWidth: 300 }}>
+        <Box sx={{ 
+          display: 'flex', 
+          gap: 3, 
+          flexWrap: 'wrap',
+          flexDirection: { xs: 'column', md: 'row' }
+        }}>
+          <Paper sx={{ 
+            p: 2, 
+            flex: { xs: '1 1 100%', md: '0 0 calc(33.333% - 16px)' },
+            minWidth: { xs: 'auto', md: '300px' }
+          }}>
             <Typography variant="h6" gutterBottom>
               Account Configuration
             </Typography>
             <AccountForm onSuccess={handleAccountsChange} />
           </Paper>
-          <Paper sx={{ p: 2, flex: 1, minWidth: 300 }}>
+          <Paper sx={{ 
+            p: 2, 
+            flex: { xs: '1 1 100%', md: '0 0 calc(33.333% - 16px)' },
+            minWidth: { xs: 'auto', md: '300px' }
+          }}>
             <Typography variant="h6" gutterBottom>
               Accounts
             </Typography>
             <AccountList accounts={accounts} onAccountsChange={handleAccountsChange} />
           </Paper>
+          <Paper sx={{ 
+            p: 2, 
+            flex: { xs: '1 1 100%', md: '0 0 calc(33.333% - 16px)' },
+            minWidth: { xs: 'auto', md: '300px' }
+          }}>
+            <Typography variant="h6" gutterBottom>
+              Jobs
+            </Typography>
+            <JobList accounts={accounts} />
+          </Paper>
         </Box>
-        <Paper sx={{ p: 2 }}>
-          <Typography variant="h6" gutterBottom>
-            Jobs
-          </Typography>
-          <JobList accounts={accounts} />
-        </Paper>
       </Box>
     </Box>
   );
