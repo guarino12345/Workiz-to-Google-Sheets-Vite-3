@@ -8,6 +8,7 @@ import {
   MenuItem,
   Alert,
   Button,
+  Link,
 } from '@mui/material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
@@ -181,6 +182,10 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       ? account.sourceFilter.join(', ')
       : 'All sources';
     
+    const googleSheetsUrl = account.googleSheetsId 
+      ? `https://docs.google.com/spreadsheets/d/${account.googleSheetsId}/edit`
+      : null;
+    
     return (
       <Box sx={{ mb: 2 }}>
         <Typography variant="h6" gutterBottom>
@@ -199,6 +204,19 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         {account.lastSyncDate && (
           <Typography variant="body2" color="text.secondary">
             Last Sync: {new Date(account.lastSyncDate).toLocaleString()}
+          </Typography>
+        )}
+        {googleSheetsUrl && (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            📊 Google Sheet: {' '}
+            <Link 
+              href={googleSheetsUrl} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              sx={{ color: 'primary.main', textDecoration: 'none' }}
+            >
+              View Conversion Data
+            </Link>
           </Typography>
         )}
       </Box>
