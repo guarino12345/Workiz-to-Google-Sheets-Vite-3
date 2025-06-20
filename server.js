@@ -696,18 +696,19 @@ app.post("/api/cron/sync-jobs", async (req, res) => {
       const currentMinute = now.getMinutes();
       const [syncHour, syncMinute] = account.syncTime.split(":").map(Number);
 
-      // Check if current time matches sync time (within 5 minutes window)
+      // For Hobby plan, be more flexible with timing (within 2 hours of scheduled time)
       const timeDiff = Math.abs(
         currentHour * 60 + currentMinute - (syncHour * 60 + syncMinute)
       );
-      if (timeDiff > 5) {
+      if (timeDiff > 120) {
+        // 2 hour window instead of 5 minutes
         console.log(
           `⏳ Not time to sync account: ${account.name} (current: ${currentHour}:${currentMinute}, sync: ${syncHour}:${syncMinute})`
         );
         continue;
       }
 
-      // Check frequency
+      // Check frequency - for Hobby plan, prioritize daily syncs
       let shouldSync = false;
       const lastSync = account.lastSyncDate
         ? new Date(account.lastSyncDate)
@@ -715,7 +716,13 @@ app.post("/api/cron/sync-jobs", async (req, res) => {
 
       switch (account.syncFrequency) {
         case "daily":
-          shouldSync = true;
+          // For daily, check if we haven't synced today
+          if (!lastSync) shouldSync = true;
+          else {
+            const today = new Date();
+            const lastSyncDate = new Date(lastSync);
+            shouldSync = today.toDateString() !== lastSyncDate.toDateString();
+          }
           break;
         case "weekly":
           if (!lastSync) shouldSync = true;
@@ -736,6 +743,7 @@ app.post("/api/cron/sync-jobs", async (req, res) => {
           }
           break;
         case "custom":
+          // For custom, use 24-hour interval
           if (!lastSync) shouldSync = true;
           else {
             const hoursSinceLastSync = (now - lastSync) / (1000 * 60 * 60);

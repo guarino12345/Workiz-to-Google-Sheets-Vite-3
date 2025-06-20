@@ -18,6 +18,28 @@ A React application that syncs Workiz job data with Google Sheets for Google Ads
 - ✅ Manual trigger functionality for testing
 - ✅ Enhanced UI with scheduling controls
 
+## Deployment Notes
+
+### Vercel Plan Limitations
+
+**Hobby Plan (Free):**
+
+- Cron jobs run **once daily** at 9:00 AM UTC
+- Limited to **2 cron jobs** per account
+- No guaranteed timely execution (1-hour window)
+
+**Pro Plan ($20/month):**
+
+- Unlimited cron job invocations
+- Guaranteed timely execution
+- Recommended for production use
+
+### Current Configuration
+
+- **Schedule**: Daily at 9:00 AM UTC (`0 9 * * *`)
+- **Flexible Timing**: 2-hour window around scheduled time
+- **Manual Triggers**: Available for immediate testing
+
 ## Development Milestones
 
 ### 🎯 Milestone 1: Project Setup & Dashboard Foundation
