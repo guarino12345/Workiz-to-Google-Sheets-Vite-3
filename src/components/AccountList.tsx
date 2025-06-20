@@ -46,7 +46,7 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
         throw new Error('Account ID not found');
       }
 
-      const response = await fetch(buildApiUrl(`/accounts/${accountId}`), {
+      const response = await fetch(buildApiUrl(`/api/accounts/${accountId}`), {
         method: 'DELETE',
       });
 
@@ -77,7 +77,7 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
         throw new Error('Account ID not found');
       }
 
-      const response = await fetch(buildApiUrl(`/accounts/${accountId}`), {
+      const response = await fetch(buildApiUrl(`/api/accounts/${accountId}`), {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
