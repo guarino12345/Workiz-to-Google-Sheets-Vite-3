@@ -36,7 +36,15 @@ async function connectToMongoDB() {
 // Account management endpoints
 app.post("/api/accounts", async (req, res) => {
   try {
-    const result = await db.collection("accounts").insertOne(req.body);
+    const accountData = {
+      ...req.body,
+      syncEnabled: req.body.syncEnabled ?? false,
+      syncFrequency: req.body.syncFrequency ?? "daily",
+      syncTime: req.body.syncTime ?? "09:00",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const result = await db.collection("accounts").insertOne(accountData);
     res.json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -61,9 +69,14 @@ app.get("/api/accounts", async (req, res) => {
 app.put("/api/accounts/:id", async (req, res) => {
   try {
     const { id, ...updateData } = req.body;
+    const updatePayload = {
+      ...updateData,
+      updatedAt: new Date(),
+    };
+
     const result = await db
       .collection("accounts")
-      .updateOne({ _id: new ObjectId(req.params.id) }, { $set: updateData });
+      .updateOne({ _id: new ObjectId(req.params.id) }, { $set: updatePayload });
 
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: "Account not found" });
@@ -97,6 +110,46 @@ app.delete("/api/accounts/:id", async (req, res) => {
     }
 
     res.json({ message: "Account deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Sync history endpoints
+app.post("/api/sync-history", async (req, res) => {
+  try {
+    const syncHistoryData = {
+      ...req.body,
+      timestamp: new Date(),
+      createdAt: new Date(),
+    };
+    const result = await db
+      .collection("syncHistory")
+      .insertOne(syncHistoryData);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/sync-history/:accountId", async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const syncHistory = await db
+      .collection("syncHistory")
+      .find({ accountId })
+      .sort({ timestamp: -1 })
+      .limit(50) // Limit to last 50 sync records
+      .toArray();
+
+    // Transform _id to id for frontend
+    const transformedHistory = syncHistory.map((record) => ({
+      ...record,
+      id: record._id.toString(),
+      _id: undefined,
+    }));
+
+    res.json(transformedHistory);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -220,6 +273,29 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
     });
     console.log(`📈 Final job count for account: ${finalJobCount}`);
 
+    // Record sync history
+    const syncHistoryRecord = {
+      accountId: account._id || account.id,
+      syncType: "jobs",
+      status: "success",
+      details: {
+        jobsFromWorkiz: jobs.length,
+        existingJobsFound: existingJobCount,
+        finalJobCount: finalJobCount,
+      },
+    };
+
+    await db.collection("syncHistory").insertOne(syncHistoryRecord);
+    console.log(`📝 Sync history recorded for jobs sync`);
+
+    // Update account's lastSyncDate
+    await db
+      .collection("accounts")
+      .updateOne(
+        { _id: account._id || new ObjectId(account.id) },
+        { $set: { lastSyncDate: new Date() } }
+      );
+
     res.json({
       message: `Synced ${jobs.length} jobs for account ${
         account.name || "Unknown"
@@ -232,6 +308,26 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
     });
   } catch (error) {
     console.log(`❌ Sync error: ${error.message}`);
+
+    // Record failed sync history if we have account info
+    if (req.params.accountId) {
+      try {
+        const syncHistoryRecord = {
+          accountId: req.params.accountId,
+          syncType: "jobs",
+          status: "error",
+          errorMessage: error.message,
+          details: {},
+        };
+        await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        console.log(`📝 Failed sync history recorded for jobs sync`);
+      } catch (historyError) {
+        console.log(
+          `❌ Failed to record sync history: ${historyError.message}`
+        );
+      }
+    }
+
     res.status(500).json({ error: error.message });
   }
 });
@@ -408,6 +504,25 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
     console.log(`✅ Google Sheets sync completed successfully`);
     console.log(`📈 Updated rows: ${response.data.updates?.updatedRows || 0}`);
 
+    // Record sync history
+    const syncHistoryRecord = {
+      accountId: account._id || account.id,
+      syncType: "sheets",
+      status: "success",
+      details: {
+        totalJobs: allJobs.length,
+        filteredJobs: filteredJobs.length,
+        updatedRows: response.data.updates?.updatedRows || 0,
+        sourceFilter: account.sourceFilter,
+        sampleJobSources: [
+          ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
+        ],
+      },
+    };
+
+    await db.collection("syncHistory").insertOne(syncHistoryRecord);
+    console.log(`📝 Sync history recorded for sheets sync`);
+
     res.json({
       message: `Synced ${filteredJobs.length} jobs to Google Sheet for account ${account.name}`,
       details: {
@@ -422,6 +537,26 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Error syncing to Google Sheets:", error);
+
+    // Record failed sync history if we have account info
+    if (req.params.accountId) {
+      try {
+        const syncHistoryRecord = {
+          accountId: req.params.accountId,
+          syncType: "sheets",
+          status: "error",
+          errorMessage: error.message,
+          details: {},
+        };
+        await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        console.log(`📝 Failed sync history recorded for sheets sync`);
+      } catch (historyError) {
+        console.log(
+          `❌ Failed to record sync history: ${historyError.message}`
+        );
+      }
+    }
+
     res.status(500).json({
       error: error.message,
       details: error.response?.data || "Unknown error occurred",
