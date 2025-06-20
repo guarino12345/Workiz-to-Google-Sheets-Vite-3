@@ -147,13 +147,6 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     }
   };
 
-  const filteredJobs = jobs.filter((job) => {
-    if (!selectedAccount?.sourceFilter || !Array.isArray(selectedAccount.sourceFilter) || selectedAccount.sourceFilter.length === 0) {
-      return true;
-    }
-    return selectedAccount.sourceFilter.includes(job.JobSource);
-  });
-
   const renderAccountInfo = (account: Account) => {
     const sourceFilterText = Array.isArray(account.sourceFilter) && account.sourceFilter.length > 0
       ? account.sourceFilter.join(', ')
