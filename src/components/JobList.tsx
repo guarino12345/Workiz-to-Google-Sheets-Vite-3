@@ -40,6 +40,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [syncing, setSyncing] = useState(false);
   const [syncingToSheets, setSyncingToSheets] = useState(false);
   const [refreshSyncHistory, setRefreshSyncHistory] = useState(0);
+  const [manualTriggering, setManualTriggering] = useState(false);
 
   // Set initial selected account only once when component mounts
   useEffect(() => {
@@ -142,6 +143,39 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     }
   };
 
+  const handleManualTrigger = async () => {
+    if (!selectedAccount?.id) return;
+    setManualTriggering(true);
+    setError('');
+    try {
+      const response = await fetch(
+        buildApiUrl(`/api/trigger-sync/${selectedAccount.id}`),
+        { method: 'POST' }
+      );
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to trigger manual sync');
+      }
+      
+      console.log('Manual trigger successful:', data);
+      setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
+      
+      // Reload jobs
+      const jobsResponse = await fetch(buildApiUrl('/api/jobs'));
+      if (jobsResponse.ok) {
+        const jobsData = await jobsResponse.json();
+        setAllJobs(jobsData);
+      }
+      
+    } catch (err) {
+      console.error('Manual trigger error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to trigger manual sync');
+    } finally {
+      setManualTriggering(false);
+    }
+  };
+
   const renderAccountInfo = (account: Account) => {
     const sourceFilterText = Array.isArray(account.sourceFilter) && account.sourceFilter.length > 0
       ? account.sourceFilter.join(', ')
@@ -232,6 +266,16 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
             >
               {syncingToSheets ? 'Syncing to Sheets...' : 'Sync to Google Sheets'}
             </Button>
+            {selectedAccount.syncEnabled && (
+              <Button
+                variant="outlined"
+                color="info"
+                onClick={handleManualTrigger}
+                disabled={manualTriggering}
+              >
+                {manualTriggering ? 'Triggering...' : 'Test Auto Sync'}
+              </Button>
+            )}
           </Box>
           {!selectedAccount.workizApiToken && (
             <Alert severity="warning">

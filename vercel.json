@@ -23,6 +23,12 @@
       "dest": "/dist/$1"
     }
   ],
+  "crons": [
+    {
+      "path": "/api/cron/sync-jobs",
+      "schedule": "0 * * * *"
+    }
+  ],
   "env": {
     "NODE_ENV": "production"
   }
