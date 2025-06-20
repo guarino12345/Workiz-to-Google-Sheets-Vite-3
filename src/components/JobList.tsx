@@ -36,7 +36,6 @@ interface JobListProps {
 const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [allJobs, setAllJobs] = useState<Job[]>([]); // Store all jobs for counting
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
   const [syncing, setSyncing] = useState(false);
   const [syncingToSheets, setSyncingToSheets] = useState(false);
@@ -99,15 +98,21 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to sync jobs');
       }
-      // After sync, reload jobs and refresh sync history
-      setSyncing(false);
-      setLoading(true);
-      setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
-      // Trigger jobs reload
-      setTimeout(() => setSyncing(false), 100); // force useEffect
+      
+      // After successful sync, refresh sync history
+      setRefreshSyncHistory(prev => prev + 1);
+      
+      // Reload jobs by triggering the useEffect
+      const jobsResponse = await fetch(buildApiUrl('/api/jobs'));
+      if (jobsResponse.ok) {
+        const jobsData = await jobsResponse.json();
+        setAllJobs(jobsData);
+      }
+      
     } catch (err) {
       console.error('Sync error:', err);
       setError(err instanceof Error ? err.message : 'Failed to sync jobs');
+    } finally {
       setSyncing(false);
     }
   };
@@ -215,7 +220,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
               variant="contained"
               color="primary"
               onClick={handleSync}
-              disabled={syncing || loading}
+              disabled={syncing}
             >
               {syncing ? 'Syncing...' : 'Sync Jobs'}
             </Button>
