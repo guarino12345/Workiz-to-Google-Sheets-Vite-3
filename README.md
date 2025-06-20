@@ -1,17 +1,22 @@
 # Workiz to Google Sheets Sync
 
-A service that automatically synchronizes Workiz job data with Google Sheets for Google Ads conversion tracking and reporting.
+A React application that syncs Workiz job data with Google Sheets for Google Ads conversion tracking. Features automated scheduling, account management, and comprehensive sync history tracking.
 
 ## Features
 
-- 🔄 Daily sync of Workiz jobs
-- 📊 Initial sync of recent jobs (last 14 days)
-- 🎯 Source-based job filtering (e.g., Google, GMB)
-- 💰 Default conversion value per account
-- 👥 Multiple Workiz account support
-- 📈 Job status tracking and updates
-- 📊 Simple dashboard with reports and logs
-- 🔄 Manual sync trigger
+- **Account Management**: Create and manage multiple Workiz accounts
+- **Automated Scheduling**: Set up daily, weekly, monthly, or custom sync intervals
+- **Sync History**: Track all sync operations with detailed logs
+- **Manual Triggers**: Test sync functionality immediately
+- **Google Sheets Integration**: Automatic sync to Google Sheets for conversion tracking
+- **Real-time Monitoring**: View last sync dates and next scheduled syncs
+
+## Recent Updates
+
+- ✅ Automated scheduling with Vercel cron jobs
+- ✅ Comprehensive sync history tracking
+- ✅ Manual trigger functionality for testing
+- ✅ Enhanced UI with scheduling controls
 
 ## Development Milestones
 
