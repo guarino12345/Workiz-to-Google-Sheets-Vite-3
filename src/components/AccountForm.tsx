@@ -7,7 +7,7 @@ import {
   Alert,
   CircularProgress,
 } from '@mui/material';
-import { Account } from '../types';
+import { Account } from '../types/index';
 
 interface AccountFormProps {
   onSuccess: () => void;

@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
+  Box,
+  Typography,
   List,
   ListItem,
   ListItemText,
   IconButton,
-  Typography,
-  Box,
   Button,
   Dialog,
   DialogTitle,
@@ -14,16 +14,15 @@ import {
   TextField,
   Alert,
   CircularProgress,
-  Chip,
-  Select,
-  MenuItem,
   FormControl,
   InputLabel,
+  Select,
+  MenuItem,
 } from '@mui/material';
-import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
+import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { Account } from '../types';
+import { Account } from '../types/index';
 
 interface AccountListProps {
   accounts: Account[];
@@ -31,24 +30,21 @@ interface AccountListProps {
 }
 
 const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange }) => {
+  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
   const [sortBy, setSortBy] = useState<'source' | 'date'>('source');
 
   const handleDelete = async (account: Account) => {
-    const accountId = account.id || account._id;
-    if (!accountId) {
-      setError('Invalid account ID');
-      return;
-    }
-
-    if (!window.confirm('Are you sure you want to delete this account?')) {
-      return;
-    }
+    if (!confirm('Are you sure you want to delete this account?')) return;
 
     try {
       setLoading(true);
+      const accountId = account.id || account._id;
+      if (!accountId) {
+        throw new Error('Account ID not found');
+      }
+
       const response = await fetch(`http://localhost:3000/api/accounts/${accountId}`, {
         method: 'DELETE',
       });
@@ -67,43 +63,29 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
   };
 
   const handleEdit = (account: Account) => {
-    const accountId = account.id || account._id;
-    if (!accountId) {
-      setError('Invalid account ID');
-      return;
-    }
-    setEditingAccount({
-      ...account,
-      id: accountId,
-      sourceFilter: Array.isArray(account.sourceFilter) ? account.sourceFilter : [account.sourceFilter || '']
-    });
+    setEditingAccount({ ...account });
   };
 
   const handleSave = async () => {
-    if (!editingAccount) {
-      setError('No account selected for editing');
-      return;
-    }
-
-    const accountId = editingAccount.id || editingAccount._id;
-    if (!accountId) {
-      setError('Invalid account ID');
-      return;
-    }
+    if (!editingAccount) return;
 
     try {
       setLoading(true);
-      const { id, _id, ...updateData } = editingAccount;
+      const accountId = editingAccount.id || editingAccount._id;
+      if (!accountId) {
+        throw new Error('Account ID not found');
+      }
+
       const response = await fetch(`http://localhost:3000/api/accounts/${accountId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          ...updateData,
-          sourceFilter: Array.isArray(editingAccount.sourceFilter) 
-            ? editingAccount.sourceFilter 
-            : [editingAccount.sourceFilter || ''],
+          name: editingAccount.name,
+          sourceFilter: editingAccount.sourceFilter,
+          googleSheetsId: editingAccount.googleSheetsId,
+          defaultConversionValue: editingAccount.defaultConversionValue,
         }),
       });
 

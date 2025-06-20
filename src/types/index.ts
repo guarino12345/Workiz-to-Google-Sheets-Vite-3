@@ -18,6 +18,7 @@ export interface Job {
   Status: string;
   JobSource: string;
   JobTotalPrice: number;
+  accountId?: string;
 }
 
 // Sync status types

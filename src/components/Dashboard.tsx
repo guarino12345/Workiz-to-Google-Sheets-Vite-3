@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { Box, Grid, Paper, Typography } from '@mui/material';
+import { Box, Paper, Typography } from '@mui/material';
 import AccountForm from './AccountForm';
 import AccountList from './AccountList';
 import JobList from './JobList';
-import { Account } from '../types';
+import { Account } from '../types/index';
 
 const Dashboard: React.FC = () => {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -50,32 +50,28 @@ const Dashboard: React.FC = () => {
         Workiz Sync Dashboard
       </Typography>
       
-      <Grid container spacing={3}>
-        <Grid item xs={12} md={6}>
-          <Paper sx={{ p: 2 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+          <Paper sx={{ p: 2, flex: 1, minWidth: 300 }}>
             <Typography variant="h6" gutterBottom>
               Account Configuration
             </Typography>
-            <AccountForm onAccountAdded={handleAccountsChange} />
+            <AccountForm onSuccess={handleAccountsChange} />
           </Paper>
-        </Grid>
-        <Grid item xs={12} md={6}>
-          <Paper sx={{ p: 2 }}>
+          <Paper sx={{ p: 2, flex: 1, minWidth: 300 }}>
             <Typography variant="h6" gutterBottom>
               Accounts
             </Typography>
             <AccountList accounts={accounts} onAccountsChange={handleAccountsChange} />
           </Paper>
-        </Grid>
-        <Grid item xs={12}>
-          <Paper sx={{ p: 2 }}>
-            <Typography variant="h6" gutterBottom>
-              Jobs
-            </Typography>
-            <JobList accounts={accounts} />
-          </Paper>
-        </Grid>
-      </Grid>
+        </Box>
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="h6" gutterBottom>
+            Jobs
+          </Typography>
+          <JobList accounts={accounts} />
+        </Paper>
+      </Box>
     </Box>
   );
 };

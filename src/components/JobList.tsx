@@ -2,18 +2,14 @@ import React, { useState, useEffect } from 'react';
 import {
   Box,
   Typography,
-  List,
-  ListItem,
-  Chip,
   FormControl,
   InputLabel,
   Select,
   MenuItem,
   Alert,
-  CircularProgress,
   Button,
 } from '@mui/material';
-import { Account } from '../types';
+import { Account } from '../types/index';
 
 interface Job {
   UUID: string;
