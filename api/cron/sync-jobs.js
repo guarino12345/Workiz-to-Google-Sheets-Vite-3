@@ -22,93 +22,6 @@ async function connectToMongoDB() {
   }
 }
 
-// Helper function to check if it's time to sync based on frequency and time
-function shouldSyncNow(account) {
-  if (!account.syncEnabled) return false;
-
-  const now = new Date();
-  const currentHour = now.getHours();
-  const currentMinute = now.getMinutes();
-
-  // Parse sync time (HH:MM format)
-  const [syncHour, syncMinute] = account.syncTime.split(":").map(Number);
-
-  // Check if current time matches sync time (within 5 minutes window)
-  const timeDiff = Math.abs(
-    currentHour * 60 + currentMinute - (syncHour * 60 + syncMinute)
-  );
-  if (timeDiff > 5) return false;
-
-  // Check frequency
-  switch (account.syncFrequency) {
-    case "daily":
-      return true; // Run every day at the specified time
-
-    case "weekly":
-      // Run once per week on the same day of week
-      const lastSync = account.lastSyncDate
-        ? new Date(account.lastSyncDate)
-        : null;
-      if (!lastSync) return true;
-      const daysSinceLastSync = Math.floor(
-        (now - lastSync) / (1000 * 60 * 60 * 24)
-      );
-      return daysSinceLastSync >= 7;
-
-    case "monthly":
-      // Run once per month on the same day
-      if (!lastSync) return true;
-      const monthsSinceLastSync =
-        (now.getFullYear() - lastSync.getFullYear()) * 12 +
-        (now.getMonth() - lastSync.getMonth());
-      return monthsSinceLastSync >= 1;
-
-    case "custom":
-      // For custom, we'll use a 24-hour interval
-      if (!lastSync) return true;
-      const hoursSinceLastSync = (now - lastSync) / (1000 * 60 * 60);
-      return hoursSinceLastSync >= 24;
-
-    default:
-      return false;
-  }
-}
-
-// Helper function to calculate next sync date
-function calculateNextSyncDate(account) {
-  const now = new Date();
-  const [syncHour, syncMinute] = account.syncTime.split(":").map(Number);
-
-  switch (account.syncFrequency) {
-    case "daily":
-      const tomorrow = new Date(now);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      tomorrow.setHours(syncHour, syncMinute, 0, 0);
-      return tomorrow;
-
-    case "weekly":
-      const nextWeek = new Date(now);
-      nextWeek.setDate(nextWeek.getDate() + 7);
-      nextWeek.setHours(syncHour, syncMinute, 0, 0);
-      return nextWeek;
-
-    case "monthly":
-      const nextMonth = new Date(now);
-      nextMonth.setMonth(nextMonth.getMonth() + 1);
-      nextMonth.setHours(syncHour, syncMinute, 0, 0);
-      return nextMonth;
-
-    case "custom":
-      const nextDay = new Date(now);
-      nextDay.setDate(nextDay.getDate() + 1);
-      nextDay.setHours(syncHour, syncMinute, 0, 0);
-      return nextDay;
-
-    default:
-      return now;
-  }
-}
-
 // Function to sync jobs for an account
 async function syncJobsForAccount(account) {
   console.log(`🔄 Starting automated sync for account: ${account.name}`);
@@ -276,14 +189,12 @@ async function syncJobsForAccount(account) {
     await db.collection("syncHistory").insertOne(syncHistoryRecord);
     console.log(`📝 Jobs sync history recorded`);
 
-    // Update account's lastSyncDate and nextSyncDate
-    const nextSyncDate = calculateNextSyncDate(account);
+    // Update account's lastSyncDate
     await db.collection("accounts").updateOne(
       { _id: account._id || new ObjectId(account.id) },
       {
         $set: {
           lastSyncDate: new Date(),
-          nextSyncDate: nextSyncDate,
         },
       }
     );
@@ -332,15 +243,38 @@ async function syncToSheetsForAccount(account) {
       .find({ accountId: account._id || account.id })
       .toArray();
 
-    // Filter jobs by sourceFilter
+    // Enhanced source filter logic - check if job source matches ANY of the filters
     let filteredJobs = allJobs;
     if (
       account.sourceFilter &&
       Array.isArray(account.sourceFilter) &&
       account.sourceFilter.length > 0
     ) {
-      filteredJobs = allJobs.filter((job) =>
-        account.sourceFilter.includes(job.JobSource)
+      // Convert all sources to lowercase for case-insensitive comparison
+      const sourceFilters = account.sourceFilter.map((filter) =>
+        filter.toLowerCase().trim()
+      );
+
+      filteredJobs = allJobs.filter((job) => {
+        const jobSource = (job.JobSource || "").toLowerCase().trim();
+        // Check if job source matches ANY of the filters (OR logic)
+        return sourceFilters.some(
+          (filter) => jobSource.includes(filter) || filter.includes(jobSource)
+        );
+      });
+
+      console.log(
+        `🔍 Source filtering: ${allJobs.length} total jobs → ${filteredJobs.length} filtered jobs`
+      );
+      console.log(`📋 Source filters: ${account.sourceFilter.join(", ")}`);
+      console.log(
+        `📊 Sample job sources: ${[
+          ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
+        ].join(", ")}`
+      );
+    } else {
+      console.log(
+        `⚠️ No source filter configured, using all ${allJobs.length} jobs`
       );
     }
 
@@ -408,6 +342,9 @@ async function syncToSheetsForAccount(account) {
         filteredJobs: filteredJobs.length,
         updatedRows: response.data.updates?.updatedRows || 0,
         sourceFilter: account.sourceFilter,
+        sampleJobSources: [
+          ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
+        ],
       },
     };
 
@@ -449,7 +386,7 @@ export default async function handler(req, res) {
   try {
     await connectToMongoDB();
 
-    // Get all accounts with sync enabled
+    // Get all accounts with sync enabled - simplified logic
     const accounts = await db
       .collection("accounts")
       .find({ syncEnabled: true })
@@ -458,28 +395,27 @@ export default async function handler(req, res) {
 
     const results = [];
 
+    // Process ALL enabled accounts - no time or frequency checks
     for (const account of accounts) {
-      if (shouldSyncNow(account)) {
-        console.log(`⏰ Time to sync account: ${account.name}`);
+      console.log(`🔄 Processing account: ${account.name}`);
 
-        // Sync jobs
-        const jobsResult = await syncJobsForAccount(account);
+      // Sync jobs
+      const jobsResult = await syncJobsForAccount(account);
+      results.push({
+        account: account.name,
+        jobsSync: jobsResult,
+      });
+
+      // Sync to sheets (if Google Sheets ID is configured)
+      if (account.googleSheetsId) {
+        const sheetsResult = await syncToSheetsForAccount(account);
         results.push({
           account: account.name,
-          jobsSync: jobsResult,
+          sheetsSync: sheetsResult,
         });
-
-        // Sync to sheets (if Google Sheets ID is configured)
-        if (account.googleSheetsId) {
-          const sheetsResult = await syncToSheetsForAccount(account);
-          results.push({
-            account: account.name,
-            sheetsSync: sheetsResult,
-          });
-        }
       } else {
         console.log(
-          `⏳ Not time to sync account: ${account.name} (next sync: ${account.nextSyncDate})`
+          `⚠️ No Google Sheets ID configured for account: ${account.name}`
         );
       }
     }

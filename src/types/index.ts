@@ -7,12 +7,9 @@ export interface Account {
   googleSheetsId: string;
   sourceFilter: string[];
   defaultConversionValue: number;
-  // New scheduling fields
+  // Simplified scheduling fields
   syncEnabled: boolean;
-  syncFrequency: 'daily' | 'weekly' | 'monthly' | 'custom';
-  syncTime: string; // HH:MM format
   lastSyncDate?: Date;
-  nextSyncDate?: Date;
   createdAt?: Date;
   updatedAt?: Date;
 }

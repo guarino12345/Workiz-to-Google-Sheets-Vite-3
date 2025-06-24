@@ -6,10 +6,6 @@ import {
   Typography,
   Alert,
   CircularProgress,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
   FormControlLabel,
   Switch,
 } from '@mui/material';
@@ -28,8 +24,6 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
     defaultConversionValue: 0,
     name: '',
     syncEnabled: false,
-    syncFrequency: 'daily',
-    syncTime: '09:00',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
@@ -63,8 +57,6 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
         defaultConversionValue: 0,
         name: '',
         syncEnabled: false,
-        syncFrequency: 'daily',
-        syncTime: '09:00',
       });
       onSuccess();
     } catch (err) {
@@ -119,7 +111,7 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
         value={Array.isArray(formData.sourceFilter) ? formData.sourceFilter.join(', ') : ''}
         onChange={(e) => setFormData({ ...formData, sourceFilter: e.target.value.split(',').map(s => s.trim()) })}
         margin="normal"
-        helperText="Enter sources separated by commas (e.g., Google, GMB)"
+        helperText="Enter sources separated by commas (e.g., Google, Pinterest, Instagram)"
       />
 
       <TextField
@@ -132,7 +124,7 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
         InputProps={{ inputProps: { min: 0 } }}
       />
 
-      {/* Scheduling Section */}
+      {/* Automated Sync Settings */}
       <Typography variant="h6" gutterBottom sx={{ mt: 3, mb: 2 }}>
         Automated Sync Settings
       </Typography>
@@ -144,37 +136,9 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
             onChange={(e) => setFormData({ ...formData, syncEnabled: e.target.checked })}
           />
         }
-        label="Enable Automated Syncing"
+        label="Enable Automated Syncing (Daily at 9:00 AM UTC)"
         sx={{ mb: 2 }}
       />
-
-      {formData.syncEnabled && (
-        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-          <FormControl sx={{ minWidth: 200, flex: 1 }}>
-            <InputLabel>Sync Frequency</InputLabel>
-            <Select
-              value={formData.syncFrequency || 'daily'}
-              label="Sync Frequency"
-              onChange={(e) => setFormData({ ...formData, syncFrequency: e.target.value as any })}
-            >
-              <MenuItem value="daily">Daily</MenuItem>
-              <MenuItem value="weekly">Weekly</MenuItem>
-              <MenuItem value="monthly">Monthly</MenuItem>
-              <MenuItem value="custom">Custom</MenuItem>
-            </Select>
-          </FormControl>
-          <TextField
-            sx={{ minWidth: 200, flex: 1 }}
-            label="Sync Time"
-            type="time"
-            value={formData.syncTime || '09:00'}
-            onChange={(e) => setFormData({ ...formData, syncTime: e.target.value })}
-            margin="normal"
-            InputLabelProps={{ shrink: true }}
-            helperText="Time to run sync (24-hour format)"
-          />
-        </Box>
-      )}
 
       <Button
         type="submit"

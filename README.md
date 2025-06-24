@@ -5,18 +5,20 @@ A React application that syncs Workiz job data with Google Sheets for Google Ads
 ## Features
 
 - **Account Management**: Create and manage multiple Workiz accounts
-- **Automated Scheduling**: Set up daily, weekly, monthly, or custom sync intervals
+- **Automated Scheduling**: Daily sync at 9:00 AM UTC for all enabled accounts
+- **Enhanced Source Filtering**: Support for multiple sources with OR logic (e.g., Google, Pinterest, Instagram)
 - **Sync History**: Track all sync operations with detailed logs
 - **Manual Triggers**: Test sync functionality immediately
 - **Google Sheets Integration**: Automatic sync to Google Sheets for conversion tracking
-- **Real-time Monitoring**: View last sync dates and next scheduled syncs
+- **Real-time Monitoring**: View last sync dates and sync status
 
 ## Recent Updates
 
-- ✅ Automated scheduling with Vercel cron jobs
+- ✅ Simplified automated scheduling (daily at 9:00 AM UTC)
+- ✅ Enhanced source filtering with multiple sources support
 - ✅ Comprehensive sync history tracking
 - ✅ Manual trigger functionality for testing
-- ✅ Enhanced UI with scheduling controls
+- ✅ Enhanced UI with simplified controls
 
 ## Deployment Notes
 
@@ -40,6 +42,25 @@ A React application that syncs Workiz job data with Google Sheets for Google Ads
 - **Flexible Timing**: 2-hour window around scheduled time
 - **Manual Triggers**: Available for immediate testing
 
+## Enhanced Source Filtering
+
+The application now supports **multiple source filters** with **OR logic**:
+
+### Examples:
+
+- **Filter**: `["Google", "Pinterest", "Instagram"]`
+- **Job with source "Google"** → ✅ Include
+- **Job with source "Pinterest"** → ✅ Include
+- **Job with source "Instagram"** → ✅ Include
+- **Job with source "Facebook"** → ❌ Exclude
+
+### Features:
+
+- **Case-insensitive matching**
+- **Partial string matching**
+- **Comma-separated input** in the UI
+- **Flexible filtering** for different marketing channels
+
 ## Development Milestones
 
 ### 🎯 Milestone 1: Project Setup & Dashboard Foundation
@@ -62,7 +83,7 @@ A React application that syncs Workiz job data with Google Sheets for Google Ads
 
 - [ ] Implement Workiz API client
 - [ ] Create job data fetching logic
-- [ ] Add job filtering by source
+- [ ] Add enhanced job filtering by multiple sources
 - [ ] Implement job caching in MongoDB
 - [ ] Add basic job display in dashboard
 
@@ -155,8 +176,9 @@ The app will be available at `http://localhost:5173`
 
   - API keys
   - Default conversion values
-  - Source filters
+  - Source filters (multiple sources supported)
   - Google Sheets IDs
+  - Sync enabled status
 
 - `syncs` - Sync history and status
 

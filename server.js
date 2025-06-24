@@ -39,8 +39,6 @@ app.post("/api/accounts", async (req, res) => {
     const accountData = {
       ...req.body,
       syncEnabled: req.body.syncEnabled ?? false,
-      syncFrequency: req.body.syncFrequency ?? "daily",
-      syncTime: req.body.syncTime ?? "09:00",
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -486,27 +484,38 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
 
     console.log(`📊 Found ${allJobs.length} total jobs for account`);
 
-    // Filter jobs by sourceFilter
+    // Enhanced source filter logic - check if job source matches ANY of the filters
     let filteredJobs = allJobs;
     if (
       account.sourceFilter &&
       Array.isArray(account.sourceFilter) &&
       account.sourceFilter.length > 0
     ) {
-      filteredJobs = allJobs.filter((job) =>
-        account.sourceFilter.includes(job.JobSource)
+      // Convert all sources to lowercase for case-insensitive comparison
+      const sourceFilters = account.sourceFilter.map((filter) =>
+        filter.toLowerCase().trim()
       );
+
+      filteredJobs = allJobs.filter((job) => {
+        const jobSource = (job.JobSource || "").toLowerCase().trim();
+        // Check if job source matches ANY of the filters (OR logic)
+        return sourceFilters.some(
+          (filter) => jobSource.includes(filter) || filter.includes(jobSource)
+        );
+      });
+
       console.log(
-        `🔍 Filtered jobs by sourceFilter: ${allJobs.length} → ${filteredJobs.length} jobs`
+        `🔍 Source filtering: ${allJobs.length} total jobs → ${filteredJobs.length} filtered jobs`
       );
+      console.log(`📋 Source filters: ${account.sourceFilter.join(", ")}`);
       console.log(
-        `📋 Job sources found: ${[
-          ...new Set(filteredJobs.map((job) => job.JobSource)),
+        `📊 Sample job sources: ${[
+          ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
         ].join(", ")}`
       );
     } else {
       console.log(
-        `⚠️ No sourceFilter configured, using all ${allJobs.length} jobs`
+        `⚠️ No source filter configured, using all ${allJobs.length} jobs`
       );
     }
 
@@ -1218,8 +1227,36 @@ app.post("/api/cron/sync-jobs", async (req, res) => {
             Array.isArray(account.sourceFilter) &&
             account.sourceFilter.length > 0
           ) {
-            filteredJobs = allJobs.filter((job) =>
-              account.sourceFilter.includes(job.JobSource)
+            // Convert all sources to lowercase for case-insensitive comparison
+            const sourceFilters = account.sourceFilter.map((filter) =>
+              filter.toLowerCase().trim()
+            );
+
+            filteredJobs = allJobs.filter((job) => {
+              const jobSource = (job.JobSource || "").toLowerCase().trim();
+              // Check if job source matches ANY of the filters (OR logic)
+              return sourceFilters.some(
+                (filter) =>
+                  jobSource.includes(filter) || filter.includes(jobSource)
+              );
+            });
+
+            console.log(
+              `🔍 Source filtering: ${allJobs.length} total jobs → ${filteredJobs.length} filtered jobs`
+            );
+            console.log(
+              `📋 Source filters: ${account.sourceFilter.join(", ")}`
+            );
+            console.log(
+              `📊 Sample job sources: ${[
+                ...new Set(
+                  filteredJobs.slice(0, 5).map((job) => job.JobSource)
+                ),
+              ].join(", ")}`
+            );
+          } else {
+            console.log(
+              `⚠️ No source filter configured, using all ${allJobs.length} jobs`
             );
           }
 
