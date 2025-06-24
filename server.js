@@ -273,6 +273,113 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
     });
     console.log(`📈 Final job count for account: ${finalJobCount}`);
 
+    // Update existing jobs and clean up old ones
+    console.log(`🔄 Starting job update and cleanup process...`);
+
+    // Get all existing jobs for this account
+    const existingJobs = await db
+      .collection("jobs")
+      .find({ accountId: account._id || account.id })
+      .toArray();
+
+    console.log(`📋 Found ${existingJobs.length} existing jobs in database`);
+
+    // Calculate 30-day cutoff date
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    let updatedJobsCount = 0;
+    let deletedJobsCount = 0;
+    let failedUpdatesCount = 0;
+
+    // Process jobs in batches of 29 with 60-second delays
+    const BATCH_SIZE = 29;
+    const DELAY_BETWEEN_BATCHES = 60000; // 60 seconds in milliseconds
+
+    for (let i = 0; i < existingJobs.length; i += BATCH_SIZE) {
+      const batch = existingJobs.slice(i, i + BATCH_SIZE);
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(existingJobs.length / BATCH_SIZE);
+
+      console.log(
+        `📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} jobs)`
+      );
+
+      // Process each job in the current batch
+      for (const existingJob of batch) {
+        try {
+          const jobDate = new Date(existingJob.JobDateTime);
+
+          // Check if job is older than 30 days
+          if (jobDate < thirtyDaysAgo) {
+            console.log(
+              `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
+            );
+            await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+            deletedJobsCount++;
+            continue;
+          }
+
+          // Update job using Workiz API
+          console.log(`🔄 Updating job: ${existingJob.UUID}`);
+          const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
+
+          const updateResponse = await fetch(updateUrl);
+          if (updateResponse.ok) {
+            const updateData = await updateResponse.json();
+
+            if (updateData.flag && updateData.data) {
+              // Update the job with fresh data from Workiz
+              const updatedJob = {
+                ...updateData.data,
+                accountId: account._id || account.id,
+              };
+
+              await db
+                .collection("jobs")
+                .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
+
+              updatedJobsCount++;
+              console.log(`✅ Updated job: ${existingJob.UUID}`);
+            } else {
+              console.log(
+                `⚠️ Job not found in Workiz API: ${existingJob.UUID}`
+              );
+              // Job might have been deleted in Workiz, so delete from our database
+              await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+              deletedJobsCount++;
+            }
+          } else {
+            console.log(
+              `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
+            );
+            failedUpdatesCount++;
+          }
+
+          // Add a small delay between individual job updates (100ms)
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        } catch (error) {
+          console.log(
+            `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+          );
+          failedUpdatesCount++;
+        }
+      }
+
+      // Add delay between batches (except for the last batch)
+      if (i + BATCH_SIZE < existingJobs.length) {
+        console.log(`⏳ Waiting 60 seconds before next batch...`);
+        await new Promise((resolve) =>
+          setTimeout(resolve, DELAY_BETWEEN_BATCHES)
+        );
+      }
+    }
+
+    console.log(`📊 Job update and cleanup completed:`);
+    console.log(`   - Updated: ${updatedJobsCount} jobs`);
+    console.log(`   - Deleted (old): ${deletedJobsCount} jobs`);
+    console.log(`   - Failed updates: ${failedUpdatesCount} jobs`);
+
     // Record sync history
     const syncHistoryRecord = {
       accountId: account._id || account.id,
@@ -282,6 +389,9 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
         jobsFromWorkiz: jobs.length,
         existingJobsFound: existingJobCount,
         finalJobCount: finalJobCount,
+        jobsUpdated: updatedJobsCount,
+        jobsDeleted: deletedJobsCount,
+        failedUpdates: failedUpdatesCount,
       },
     };
 
@@ -304,6 +414,9 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
         jobsFromWorkiz: jobs.length,
         existingJobsFound: existingJobCount,
         finalJobCount: finalJobCount,
+        jobsUpdated: updatedJobsCount,
+        jobsDeleted: deletedJobsCount,
+        failedUpdates: failedUpdatesCount,
       },
     });
   } catch (error) {
@@ -621,6 +734,115 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
         );
       }
 
+      // Update existing jobs and clean up old ones
+      console.log(`🔄 Starting job update and cleanup process...`);
+
+      // Get all existing jobs for this account
+      const existingJobs = await db
+        .collection("jobs")
+        .find({ accountId: account._id || account.id })
+        .toArray();
+
+      console.log(`📋 Found ${existingJobs.length} existing jobs in database`);
+
+      // Calculate 30-day cutoff date
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+      let updatedJobsCount = 0;
+      let deletedJobsCount = 0;
+      let failedUpdatesCount = 0;
+
+      // Process jobs in batches of 29 with 60-second delays
+      const BATCH_SIZE = 29;
+      const DELAY_BETWEEN_BATCHES = 60000; // 60 seconds in milliseconds
+
+      for (let i = 0; i < existingJobs.length; i += BATCH_SIZE) {
+        const batch = existingJobs.slice(i, i + BATCH_SIZE);
+        const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(existingJobs.length / BATCH_SIZE);
+
+        console.log(
+          `📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} jobs)`
+        );
+
+        // Process each job in the current batch
+        for (const existingJob of batch) {
+          try {
+            const jobDate = new Date(existingJob.JobDateTime);
+
+            // Check if job is older than 30 days
+            if (jobDate < thirtyDaysAgo) {
+              console.log(
+                `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
+              );
+              await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+              deletedJobsCount++;
+              continue;
+            }
+
+            // Update job using Workiz API
+            console.log(`🔄 Updating job: ${existingJob.UUID}`);
+            const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
+
+            const updateResponse = await fetch(updateUrl);
+            if (updateResponse.ok) {
+              const updateData = await updateResponse.json();
+
+              if (updateData.flag && updateData.data) {
+                // Update the job with fresh data from Workiz
+                const updatedJob = {
+                  ...updateData.data,
+                  accountId: account._id || account.id,
+                };
+
+                await db
+                  .collection("jobs")
+                  .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
+
+                updatedJobsCount++;
+                console.log(`✅ Updated job: ${existingJob.UUID}`);
+              } else {
+                console.log(
+                  `⚠️ Job not found in Workiz API: ${existingJob.UUID}`
+                );
+                // Job might have been deleted in Workiz, so delete from our database
+                await db
+                  .collection("jobs")
+                  .deleteOne({ UUID: existingJob.UUID });
+                deletedJobsCount++;
+              }
+            } else {
+              console.log(
+                `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
+              );
+              failedUpdatesCount++;
+            }
+
+            // Add a small delay between individual job updates (100ms)
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          } catch (error) {
+            console.log(
+              `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+            );
+            failedUpdatesCount++;
+          }
+        }
+
+        // Add delay between batches (except for the last batch)
+        if (i + BATCH_SIZE < existingJobs.length) {
+          console.log(`⏳ Waiting 60 seconds before next batch...`);
+          await new Promise((resolve) =>
+            setTimeout(resolve, DELAY_BETWEEN_BATCHES)
+          );
+        }
+      }
+
+      console.log(`📊 Job update and cleanup completed:`);
+      console.log(`   - Updated: ${updatedJobsCount} jobs`);
+      console.log(`   - Deleted (old): ${deletedJobsCount} jobs`);
+      console.log(`   - Failed updates: ${failedUpdatesCount} jobs`);
+
       // Record sync history
       const syncHistoryRecord = {
         accountId: account._id || account.id,
@@ -631,6 +853,9 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
           finalJobCount: await db
             .collection("jobs")
             .countDocuments({ accountId: account._id || account.id }),
+          jobsUpdated: updatedJobsCount,
+          jobsDeleted: deletedJobsCount,
+          failedUpdates: failedUpdatesCount,
         },
       };
 
@@ -646,7 +871,13 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
 
       res.json({
         message: `Manual sync completed for account ${account.name}`,
-        jobsSync: { success: true, jobsSynced: jobs.length },
+        jobsSync: {
+          success: true,
+          jobsSynced: jobs.length,
+          jobsUpdated: updatedJobsCount,
+          jobsDeleted: deletedJobsCount,
+          failedUpdates: failedUpdatesCount,
+        },
       });
     } catch (error) {
       console.error(
@@ -797,6 +1028,122 @@ app.post("/api/cron/sync-jobs", async (req, res) => {
           );
         }
 
+        // Update existing jobs and clean up old ones
+        console.log(`🔄 Starting job update and cleanup process...`);
+
+        // Get all existing jobs for this account
+        const existingJobs = await db
+          .collection("jobs")
+          .find({ accountId: account._id || account.id })
+          .toArray();
+
+        console.log(
+          `📋 Found ${existingJobs.length} existing jobs in database`
+        );
+
+        // Calculate 30-day cutoff date
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        let updatedJobsCount = 0;
+        let deletedJobsCount = 0;
+        let failedUpdatesCount = 0;
+
+        // Process jobs in batches of 29 with 60-second delays
+        const BATCH_SIZE = 29;
+        const DELAY_BETWEEN_BATCHES = 60000; // 60 seconds in milliseconds
+
+        for (let i = 0; i < existingJobs.length; i += BATCH_SIZE) {
+          const batch = existingJobs.slice(i, i + BATCH_SIZE);
+          const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+          const totalBatches = Math.ceil(existingJobs.length / BATCH_SIZE);
+
+          console.log(
+            `📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} jobs)`
+          );
+
+          // Process each job in the current batch
+          for (const existingJob of batch) {
+            try {
+              const jobDate = new Date(existingJob.JobDateTime);
+
+              // Check if job is older than 30 days
+              if (jobDate < thirtyDaysAgo) {
+                console.log(
+                  `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
+                );
+                await db
+                  .collection("jobs")
+                  .deleteOne({ UUID: existingJob.UUID });
+                deletedJobsCount++;
+                continue;
+              }
+
+              // Update job using Workiz API
+              console.log(`🔄 Updating job: ${existingJob.UUID}`);
+              const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
+
+              const updateResponse = await fetch(updateUrl);
+              if (updateResponse.ok) {
+                const updateData = await updateResponse.json();
+
+                if (updateData.flag && updateData.data) {
+                  // Update the job with fresh data from Workiz
+                  const updatedJob = {
+                    ...updateData.data,
+                    accountId: account._id || account.id,
+                  };
+
+                  await db
+                    .collection("jobs")
+                    .updateOne(
+                      { UUID: existingJob.UUID },
+                      { $set: updatedJob }
+                    );
+
+                  updatedJobsCount++;
+                  console.log(`✅ Updated job: ${existingJob.UUID}`);
+                } else {
+                  console.log(
+                    `⚠️ Job not found in Workiz API: ${existingJob.UUID}`
+                  );
+                  // Job might have been deleted in Workiz, so delete from our database
+                  await db
+                    .collection("jobs")
+                    .deleteOne({ UUID: existingJob.UUID });
+                  deletedJobsCount++;
+                }
+              } else {
+                console.log(
+                  `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
+                );
+                failedUpdatesCount++;
+              }
+
+              // Add a small delay between individual job updates (100ms)
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            } catch (error) {
+              console.log(
+                `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+              );
+              failedUpdatesCount++;
+            }
+          }
+
+          // Add delay between batches (except for the last batch)
+          if (i + BATCH_SIZE < existingJobs.length) {
+            console.log(`⏳ Waiting 60 seconds before next batch...`);
+            await new Promise((resolve) =>
+              setTimeout(resolve, DELAY_BETWEEN_BATCHES)
+            );
+          }
+        }
+
+        console.log(`📊 Job update and cleanup completed:`);
+        console.log(`   - Updated: ${updatedJobsCount} jobs`);
+        console.log(`   - Deleted (old): ${deletedJobsCount} jobs`);
+        console.log(`   - Failed updates: ${failedUpdatesCount} jobs`);
+
         // Record sync history
         const syncHistoryRecord = {
           accountId: account._id || account.id,
@@ -807,6 +1154,9 @@ app.post("/api/cron/sync-jobs", async (req, res) => {
             finalJobCount: await db
               .collection("jobs")
               .countDocuments({ accountId: account._id || account.id }),
+            jobsUpdated: updatedJobsCount,
+            jobsDeleted: deletedJobsCount,
+            failedUpdates: failedUpdatesCount,
           },
         };
 
@@ -822,7 +1172,13 @@ app.post("/api/cron/sync-jobs", async (req, res) => {
 
         results.push({
           account: account.name,
-          jobsSync: { success: true, jobsSynced: jobs.length },
+          jobsSync: {
+            success: true,
+            jobsSynced: jobs.length,
+            jobsUpdated: updatedJobsCount,
+            jobsDeleted: deletedJobsCount,
+            failedUpdates: failedUpdatesCount,
+          },
         });
       } catch (error) {
         console.error(
