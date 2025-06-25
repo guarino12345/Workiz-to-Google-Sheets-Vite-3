@@ -70,6 +70,17 @@ interface JobListProps {
   accounts: Account[];
 }
 
+// Helper function to safely extract error messages
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    return (err as Error).message;
+  }
+  if (typeof err === 'string') {
+    return err;
+  }
+  return 'An unknown error occurred';
+}
+
 const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [allJobs, setAllJobs] = useState<Job[]>([]); // Store all jobs for counting
@@ -212,7 +223,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       
     } catch (err: unknown) {
       console.error('Sync error:', err);
-      const errorMessage = err instanceof Error ? err.message : (err as any)?.message || String(err);
+      const errorMessage = getErrorMessage(err);
       setError(errorMessage);
       
       // Set error result
@@ -272,7 +283,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
     } catch (err: unknown) {
       console.error('Sync to sheets error:', err);
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorMessage = getErrorMessage(err);
       setError(errorMessage);
       
       setSyncResult({
@@ -338,7 +349,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       
     } catch (err: unknown) {
       console.error('Manual trigger error:', err);
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      const errorMessage = getErrorMessage(err);
       setError(errorMessage);
       
       setSyncResult({
