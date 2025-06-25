@@ -97,7 +97,11 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       if (accounts.length === 0) return;
       try {
         const response = await fetch(buildApiUrl('/api/jobs'));
-        if (!response.ok) throw new Error('Failed to fetch jobs from DB');
+        if (!response.ok) {
+          console.error('Failed to fetch jobs from DB');
+          setAllJobs([]);
+          return;
+        }
         const data = await response.json();
         setAllJobs(data);
       } catch (err) {
@@ -169,11 +173,18 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       await new Promise<void>(resolve => setTimeout(resolve, 500));
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to sync jobs');
+        const errorData = await response.json() as { error?: string };
+        const errorMessage = errorData.error || 'Failed to sync jobs';
+        setError(errorMessage);
+        setSyncResult({
+          success: false,
+          message: 'Sync failed',
+          timestamp: new Date()
+        });
+        return;
       }
       
-      const result = await response.json();
+      const result = await response.json() as { details?: any };
       
       updateSyncProgress('cleaning', 90, 'Cleaning up old data...');
       await new Promise<void>(resolve => setTimeout(resolve, 500));
@@ -201,7 +212,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       
     } catch (err: unknown) {
       console.error('Sync error:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Failed to sync jobs';
+      const errorMessage = err instanceof Error ? err.message : (err as any)?.message || String(err);
       setError(errorMessage);
       
       // Set error result
@@ -234,10 +245,17 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         buildApiUrl(`/api/sync-to-sheets/${selectedAccount.id}`),
         { method: 'POST' }
       );
-      const data = await response.json();
+      const data = await response.json() as { error?: string; details?: any };
       
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to sync to Google Sheets');
+        const errorMessage = data.error || 'Failed to sync to Google Sheets';
+        setError(errorMessage);
+        setSyncResult({
+          success: false,
+          message: 'Google Sheets sync failed',
+          timestamp: new Date()
+        });
+        return;
       }
       
       updateSyncProgress('complete', 100, 'Google Sheets sync completed!');
@@ -254,7 +272,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
     } catch (err: unknown) {
       console.error('Sync to sheets error:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Failed to sync to Google Sheets';
+      const errorMessage = err instanceof Error ? err.message : String(err);
       setError(errorMessage);
       
       setSyncResult({
@@ -285,10 +303,17 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         buildApiUrl(`/api/trigger-sync/${selectedAccount.id}`),
         { method: 'POST' }
       );
-      const data = await response.json();
+      const data = await response.json() as { error?: string; jobsSync?: { details?: any } };
       
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to trigger manual sync');
+        const errorMessage = data.error || 'Failed to trigger manual sync';
+        setError(errorMessage);
+        setSyncResult({
+          success: false,
+          message: 'Manual sync failed',
+          timestamp: new Date()
+        });
+        return;
       }
       
       updateSyncProgress('complete', 100, 'Manual sync completed!');
@@ -313,7 +338,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       
     } catch (err: unknown) {
       console.error('Manual trigger error:', err);
-      const errorMessage = err instanceof Error ? err.message : 'Failed to trigger manual sync';
+      const errorMessage = err instanceof Error ? err.message : String(err);
       setError(errorMessage);
       
       setSyncResult({
