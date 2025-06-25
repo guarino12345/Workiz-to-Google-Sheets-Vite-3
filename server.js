@@ -13,6 +13,16 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Global error handler middleware
+app.use((err, req, res, next) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({
+    error: "Internal server error",
+    message: err.message,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({
@@ -20,6 +30,28 @@ app.get("/api/health", (req, res) => {
     timestamp: new Date().toISOString(),
     message: "Server is running",
   });
+});
+
+// Database test endpoint
+app.get("/api/test-db", async (req, res) => {
+  try {
+    const db = await ensureDbConnection();
+    const collections = await db.listCollections().toArray();
+    res.json({
+      status: "ok",
+      message: "Database connection successful",
+      collections: collections.map((c) => c.name),
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error("Database test failed:", error);
+    res.status(500).json({
+      status: "error",
+      message: "Database connection failed",
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
 });
 
 const MONGODB_URI = process.env.MONGODB_URI;
@@ -42,9 +74,19 @@ async function connectToMongoDB() {
   }
 }
 
+// Helper function to ensure database connection
+async function ensureDbConnection() {
+  if (!db) {
+    console.log("🔄 Establishing database connection...");
+    await connectToMongoDB();
+  }
+  return db;
+}
+
 // Account management endpoints
 app.post("/api/accounts", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const accountData = {
       ...req.body,
       syncEnabled: req.body.syncEnabled ?? false,
@@ -56,12 +98,14 @@ app.post("/api/accounts", async (req, res) => {
     const result = await db.collection("accounts").insertOne(accountData);
     res.json(result);
   } catch (error) {
+    console.error("Error creating account:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.get("/api/accounts", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const accounts = await db.collection("accounts").find().toArray();
     // Transform _id to id for frontend
     const transformedAccounts = accounts.map((account) => ({
@@ -71,12 +115,14 @@ app.get("/api/accounts", async (req, res) => {
     }));
     res.json(transformedAccounts);
   } catch (error) {
+    console.error("Error fetching accounts:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.put("/api/accounts/:id", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const { id, ...updateData } = req.body;
     const updatePayload = {
       ...updateData,
@@ -104,12 +150,14 @@ app.put("/api/accounts/:id", async (req, res) => {
 
     res.json(transformedAccount);
   } catch (error) {
+    console.error("Error updating account:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.delete("/api/accounts/:id", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const result = await db.collection("accounts").deleteOne({
       _id: new ObjectId(req.params.id),
     });
@@ -120,6 +168,7 @@ app.delete("/api/accounts/:id", async (req, res) => {
 
     res.json({ message: "Account deleted successfully" });
   } catch (error) {
+    console.error("Error deleting account:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -127,6 +176,7 @@ app.delete("/api/accounts/:id", async (req, res) => {
 // Sync history endpoints
 app.post("/api/sync-history", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const syncHistoryData = {
       ...req.body,
       timestamp: new Date(),
@@ -137,12 +187,14 @@ app.post("/api/sync-history", async (req, res) => {
       .insertOne(syncHistoryData);
     res.json(result);
   } catch (error) {
+    console.error("Error creating sync history:", error);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.get("/api/sync-history/:accountId", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const { accountId } = req.params;
     const syncHistory = await db
       .collection("syncHistory")
@@ -160,6 +212,7 @@ app.get("/api/sync-history/:accountId", async (req, res) => {
 
     res.json(transformedHistory);
   } catch (error) {
+    console.error("Error fetching sync history:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -167,6 +220,7 @@ app.get("/api/sync-history/:accountId", async (req, res) => {
 // Jobs endpoints
 app.get("/api/jobs", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const jobs = await db
       .collection("jobs")
       .find()
@@ -174,6 +228,7 @@ app.get("/api/jobs", async (req, res) => {
       .toArray();
     res.json(jobs);
   } catch (error) {
+    console.error("Error fetching jobs:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -181,6 +236,7 @@ app.get("/api/jobs", async (req, res) => {
 // Sync jobs from Workiz and save to MongoDB
 app.post("/api/sync-jobs/:accountId", async (req, res) => {
   try {
+    const db = await ensureDbConnection();
     const { accountId } = req.params;
     console.log(`🔍 Starting sync for account ID: ${accountId}`);
 
@@ -934,10 +990,7 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
     );
 
     // Ensure database connection
-    if (!db) {
-      console.log("🔄 Connecting to MongoDB...");
-      await connectToMongoDB();
-    }
+    const db = await ensureDbConnection();
 
     // Get all accounts with sync enabled
     const accounts = await db
