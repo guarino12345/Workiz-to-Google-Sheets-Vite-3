@@ -993,3 +993,9 @@ Each job object has its own URL. Where {UUID} is the value of the job's unique i
 
 Request URL
 https://api.workiz.com/api/v1/{WORKIZ_API_KEY}/job/get/JMUC3R/
+
+Job Default 80 (conversion value in the account)
+
+When job has value or not = to 0 then change the value (JobTotalPrice)
+
+Cancelled then Change Value to 0

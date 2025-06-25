@@ -198,7 +198,8 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
           Default Conversion Value: ${account.defaultConversionValue}
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Auto Sync: {account.syncEnabled ? 'Enabled (Daily at 9:00 AM UTC)' : 'Disabled'}
+          Auto Sync: {account.syncEnabled ? 'Enabled' : 'Disabled'}
+          {account.syncEnabled && ` (${account.syncFrequency} at ${account.syncTime})`}
         </Typography>
         {account.lastSyncDate && (
           <Typography variant="body2" color="text.secondary">

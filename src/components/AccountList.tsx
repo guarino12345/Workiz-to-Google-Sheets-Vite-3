@@ -90,6 +90,8 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
           googleSheetsId: editingAccount.googleSheetsId,
           defaultConversionValue: editingAccount.defaultConversionValue,
           syncEnabled: editingAccount.syncEnabled,
+          syncFrequency: editingAccount.syncFrequency,
+          syncTime: editingAccount.syncTime,
         }),
       });
 
@@ -115,7 +117,7 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
     if (!editingAccount) return;
     setEditingAccount({
       ...editingAccount,
-      sourceFilter: e.target.value.split(',').map(s => s.trim()),
+      sourceFilter: [e.target.value],
     });
   };
 
@@ -236,7 +238,8 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
                   </Typography>
                   <br />
                   <Typography component="span" variant="body2" color="text.secondary">
-                    Auto Sync: {account.syncEnabled ? 'Enabled (Daily at 9:00 AM UTC)' : 'Disabled'}
+                    Auto Sync: {account.syncEnabled ? 'Enabled' : 'Disabled'}
+                    {account.syncEnabled && ` (${account.syncFrequency} at ${account.syncTime})`}
                   </Typography>
                 </>
               }
@@ -259,12 +262,11 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
           />
           <TextField
             margin="dense"
-            label="Source Filter (comma-separated)"
+            label="Source Filter"
             fullWidth
             value={Array.isArray(editingAccount?.sourceFilter) ? editingAccount?.sourceFilter.join(', ') : editingAccount?.sourceFilter || ''}
             onChange={handleSourceFilterChange}
             sx={{ mb: 2 }}
-            helperText="Enter sources separated by commas (e.g., Google, Pinterest, Instagram)"
           />
           <TextField
             margin="dense"
@@ -284,7 +286,7 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
             sx={{ mb: 2 }}
           />
           
-          {/* Automated Sync Settings */}
+          {/* Scheduling Section */}
           <Typography variant="h6" gutterBottom sx={{ mt: 3, mb: 2 }}>
             Automated Sync Settings
           </Typography>
@@ -299,9 +301,42 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
                 } : null)}
               />
             }
-            label="Enable Automated Syncing (Daily at 9:00 AM UTC)"
+            label="Enable Automated Syncing"
             sx={{ mb: 2 }}
           />
+
+          {editingAccount?.syncEnabled && (
+            <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+              <FormControl sx={{ minWidth: 200, flex: 1 }}>
+                <InputLabel>Sync Frequency</InputLabel>
+                <Select
+                  value={editingAccount?.syncFrequency || 'daily'}
+                  label="Sync Frequency"
+                  onChange={(e) => setEditingAccount(editingAccount ? {
+                    ...editingAccount,
+                    syncFrequency: e.target.value as any
+                  } : null)}
+                >
+                  <MenuItem value="daily">Daily</MenuItem>
+                  <MenuItem value="weekly">Weekly</MenuItem>
+                  <MenuItem value="monthly">Monthly</MenuItem>
+                  <MenuItem value="custom">Custom</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField
+                sx={{ minWidth: 200, flex: 1 }}
+                label="Sync Time"
+                type="time"
+                value={editingAccount?.syncTime || '09:00'}
+                onChange={(e) => setEditingAccount(editingAccount ? {
+                  ...editingAccount,
+                  syncTime: e.target.value
+                } : null)}
+                InputLabelProps={{ shrink: true }}
+                helperText="Time to run sync (24-hour format)"
+              />
+            </Box>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCancel}>Cancel</Button>
