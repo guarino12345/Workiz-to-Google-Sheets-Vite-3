@@ -13,6 +13,15 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Health check endpoint
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    message: "Server is running",
+  });
+});
+
 const MONGODB_URI = process.env.MONGODB_URI;
 
 if (!MONGODB_URI) {
@@ -907,9 +916,28 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
 });
 
 // Cron job endpoint
-app.post("/api/cron/sync-jobs", async (req, res) => {
+app.get("/api/cron/sync-jobs", async (req, res) => {
   try {
     console.log("🕐 Cron job triggered at:", new Date().toISOString());
+    console.log("🔧 Environment check:");
+    console.log(
+      "   - MONGODB_URI:",
+      process.env.MONGODB_URI ? "Present" : "Missing"
+    );
+    console.log(
+      "   - GOOGLE_SHEETS_CREDENTIALS:",
+      process.env.GOOGLE_SHEETS_CREDENTIALS ? "Present" : "Missing"
+    );
+    console.log(
+      "   - VITE_GOOGLE_SHEETS_CREDENTIALS:",
+      process.env.VITE_GOOGLE_SHEETS_CREDENTIALS ? "Present" : "Missing"
+    );
+
+    // Ensure database connection
+    if (!db) {
+      console.log("🔄 Connecting to MongoDB...");
+      await connectToMongoDB();
+    }
 
     // Get all accounts with sync enabled
     const accounts = await db
@@ -1340,3 +1368,6 @@ connectToMongoDB().then(() => {
     console.log(`Server running on port ${port}`);
   });
 });
+
+// Export for Vercel serverless functions
+export default app;
