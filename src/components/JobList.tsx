@@ -9,7 +9,22 @@ import {
   Alert,
   Button,
   Link,
+  LinearProgress,
+  Card,
+  CardContent,
+  Chip,
+  Collapse,
+  IconButton,
 } from '@mui/material';
+import { 
+  CheckCircle, 
+  Error, 
+  ExpandMore, 
+  ExpandLess,
+  CloudDownload,
+  CloudUpload,
+  Refresh
+} from '@mui/icons-material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
 import SyncHistoryComponent from './SyncHistory';
@@ -30,6 +45,27 @@ interface Job {
   accountId: string;
 }
 
+interface SyncProgress {
+  phase: 'fetching' | 'processing' | 'updating' | 'cleaning' | 'complete';
+  percentage: number;
+  message: string;
+  details?: string;
+}
+
+interface SyncResult {
+  success: boolean;
+  message: string;
+  details?: {
+    jobsFromWorkiz?: number;
+    existingJobsFound?: number;
+    finalJobCount?: number;
+    jobsUpdated?: number;
+    jobsDeleted?: number;
+    failedUpdates?: number;
+  };
+  timestamp: Date;
+}
+
 interface JobListProps {
   accounts: Account[];
 }
@@ -42,6 +78,11 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [syncingToSheets, setSyncingToSheets] = useState(false);
   const [refreshSyncHistory, setRefreshSyncHistory] = useState(0);
   const [manualTriggering, setManualTriggering] = useState(false);
+  
+  // New state for enhanced loading and progress
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [showSyncDetails, setShowSyncDetails] = useState(false);
 
   // Set initial selected account only once when component mounts
   useEffect(() => {
@@ -83,23 +124,70 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     }
   };
 
+  const updateSyncProgress = (phase: SyncProgress['phase'], percentage: number, message: string, details?: string) => {
+    setSyncProgress({
+      phase,
+      percentage,
+      message,
+      details
+    });
+  };
+
   const handleSync = async () => {
     if (!selectedAccount?.id) {
       console.error('No account ID available for sync');
       return;
     }
+    
     setSyncing(true);
     setError('');
+    setSyncResult(null);
+    setShowSyncDetails(false);
+    
+    // Initialize progress
+    updateSyncProgress('fetching', 0, 'Initializing sync...');
+    
     try {
       console.log('Syncing jobs for account:', selectedAccount.id);
+      
+      // Simulate progress updates for better UX
+      updateSyncProgress('fetching', 10, 'Connecting to Workiz API...');
+      await new Promise<void>(resolve => setTimeout(resolve, 500));
+      
+      updateSyncProgress('fetching', 25, 'Fetching jobs from Workiz...');
+      await new Promise<void>(resolve => setTimeout(resolve, 500));
+      
+      updateSyncProgress('processing', 40, 'Processing job data...');
+      await new Promise<void>(resolve => setTimeout(resolve, 500));
+      
       const response = await fetch(
         buildApiUrl(`/api/sync-jobs/${selectedAccount.id}`),
         { method: 'POST' }
       );
+      
+      updateSyncProgress('updating', 70, 'Updating database...');
+      await new Promise<void>(resolve => setTimeout(resolve, 500));
+      
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || 'Failed to sync jobs');
       }
+      
+      const result = await response.json();
+      
+      updateSyncProgress('cleaning', 90, 'Cleaning up old data...');
+      await new Promise<void>(resolve => setTimeout(resolve, 500));
+      
+      updateSyncProgress('complete', 100, 'Sync completed successfully!');
+      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+      
+      // Set success result
+      setSyncResult({
+        success: true,
+        message: `Successfully synced ${result.details?.jobsFromWorkiz || 0} jobs`,
+        details: result.details,
+        timestamp: new Date()
+      });
       
       // After successful sync, refresh sync history
       setRefreshSyncHistory(prev => prev + 1);
@@ -111,11 +199,21 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         setAllJobs(jobsData);
       }
       
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Sync error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to sync jobs');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to sync jobs';
+      setError(errorMessage);
+      
+      // Set error result
+      setSyncResult({
+        success: false,
+        message: 'Sync failed',
+        timestamp: new Date()
+      });
     } finally {
       setSyncing(false);
+      // Keep progress visible for a moment, then clear
+      setTimeout(() => setSyncProgress(null), 3000);
     }
   };
 
@@ -123,7 +221,15 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     if (!selectedAccount?.id) return;
     setSyncingToSheets(true);
     setError('');
+    setSyncResult(null);
+    setShowSyncDetails(false);
+    
     try {
+      updateSyncProgress('fetching', 20, 'Preparing Google Sheets sync...');
+      await new Promise<void>(resolve => setTimeout(resolve, 300));
+      
+      updateSyncProgress('processing', 50, 'Syncing to Google Sheets...');
+      
       const response = await fetch(
         buildApiUrl(`/api/sync-to-sheets/${selectedAccount.id}`),
         { method: 'POST' }
@@ -134,13 +240,31 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         throw new Error(data.error || 'Failed to sync to Google Sheets');
       }
       
+      updateSyncProgress('complete', 100, 'Google Sheets sync completed!');
+      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+      
+      setSyncResult({
+        success: true,
+        message: `Successfully synced to Google Sheets`,
+        details: data.details,
+        timestamp: new Date()
+      });
+      
       console.log('Sync to sheets successful:', data);
       setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Sync to sheets error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to sync to Google Sheets');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to sync to Google Sheets';
+      setError(errorMessage);
+      
+      setSyncResult({
+        success: false,
+        message: 'Google Sheets sync failed',
+        timestamp: new Date()
+      });
     } finally {
       setSyncingToSheets(false);
+      setTimeout(() => setSyncProgress(null), 3000);
     }
   };
 
@@ -148,7 +272,15 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     if (!selectedAccount?.id) return;
     setManualTriggering(true);
     setError('');
+    setSyncResult(null);
+    setShowSyncDetails(false);
+    
     try {
+      updateSyncProgress('fetching', 30, 'Triggering manual sync...');
+      await new Promise<void>(resolve => setTimeout(resolve, 300));
+      
+      updateSyncProgress('processing', 60, 'Processing manual sync...');
+      
       const response = await fetch(
         buildApiUrl(`/api/trigger-sync/${selectedAccount.id}`),
         { method: 'POST' }
@@ -158,6 +290,16 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       if (!response.ok) {
         throw new Error(data.error || 'Failed to trigger manual sync');
       }
+      
+      updateSyncProgress('complete', 100, 'Manual sync completed!');
+      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+      
+      setSyncResult({
+        success: true,
+        message: `Manual sync completed successfully`,
+        details: data.jobsSync?.details,
+        timestamp: new Date()
+      });
       
       console.log('Manual trigger successful:', data);
       setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
@@ -169,11 +311,41 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         setAllJobs(jobsData);
       }
       
-    } catch (err) {
+    } catch (err: unknown) {
       console.error('Manual trigger error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to trigger manual sync');
+      const errorMessage = err instanceof Error ? err.message : 'Failed to trigger manual sync';
+      setError(errorMessage);
+      
+      setSyncResult({
+        success: false,
+        message: 'Manual sync failed',
+        timestamp: new Date()
+      });
     } finally {
       setManualTriggering(false);
+      setTimeout(() => setSyncProgress(null), 3000);
+    }
+  };
+
+  const getProgressColor = (phase: SyncProgress['phase']) => {
+    switch (phase) {
+      case 'fetching': return 'primary';
+      case 'processing': return 'info';
+      case 'updating': return 'warning';
+      case 'cleaning': return 'secondary';
+      case 'complete': return 'success';
+      default: return 'primary';
+    }
+  };
+
+  const getProgressIcon = (phase: SyncProgress['phase']) => {
+    switch (phase) {
+      case 'fetching': return <CloudDownload />;
+      case 'processing': return <Refresh />;
+      case 'updating': return <CloudUpload />;
+      case 'cleaning': return <Refresh />;
+      case 'complete': return <CheckCircle />;
+      default: return <CloudDownload />;
     }
   };
 
@@ -267,12 +439,119 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       {selectedAccount && (
         <>
           {renderAccountInfo(selectedAccount)}
+          
+          {/* Sync Progress */}
+          {syncProgress && (
+            <Card sx={{ mb: 2, border: '1px solid', borderColor: `${getProgressColor(syncProgress.phase)}.main` }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  {getProgressIcon(syncProgress.phase)}
+                  <Typography variant="h6" sx={{ ml: 1, flexGrow: 1 }}>
+                    {syncProgress.message}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {syncProgress.percentage}%
+                  </Typography>
+                </Box>
+                <LinearProgress 
+                  variant="determinate" 
+                  value={syncProgress.percentage} 
+                  color={getProgressColor(syncProgress.phase)}
+                  sx={{ height: 8, borderRadius: 4 }}
+                />
+                {syncProgress.details && (
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                    {syncProgress.details}
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Sync Result */}
+          {syncResult && (
+            <Card sx={{ 
+              mb: 2, 
+              border: '1px solid', 
+              borderColor: syncResult.success ? 'success.main' : 'error.main',
+              backgroundColor: syncResult.success ? 'success.50' : 'error.50'
+            }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  {syncResult.success ? <CheckCircle color="success" /> : <Error color="error" />}
+                  <Typography variant="h6" sx={{ ml: 1, flexGrow: 1 }}>
+                    {syncResult.message}
+                  </Typography>
+                  <IconButton 
+                    size="small" 
+                    onClick={() => setShowSyncDetails(!showSyncDetails)}
+                  >
+                    {showSyncDetails ? <ExpandLess /> : <ExpandMore />}
+                  </IconButton>
+                </Box>
+                <Typography variant="body2" color="text.secondary">
+                  {syncResult.timestamp.toLocaleString()}
+                </Typography>
+                
+                <Collapse in={showSyncDetails}>
+                  {syncResult.details && (
+                    <Box sx={{ mt: 2, display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                      {syncResult.details.jobsFromWorkiz !== undefined && (
+                        <Chip 
+                          label={`${syncResult.details.jobsFromWorkiz} from Workiz`} 
+                          color="primary" 
+                          size="small" 
+                        />
+                      )}
+                      {syncResult.details.existingJobsFound !== undefined && (
+                        <Chip 
+                          label={`${syncResult.details.existingJobsFound} existing`} 
+                          color="info" 
+                          size="small" 
+                        />
+                      )}
+                      {syncResult.details.finalJobCount !== undefined && (
+                        <Chip 
+                          label={`${syncResult.details.finalJobCount} total`} 
+                          color="success" 
+                          size="small" 
+                        />
+                      )}
+                      {syncResult.details.jobsUpdated !== undefined && (
+                        <Chip 
+                          label={`${syncResult.details.jobsUpdated} updated`} 
+                          color="warning" 
+                          size="small" 
+                        />
+                      )}
+                      {syncResult.details.jobsDeleted !== undefined && (
+                        <Chip 
+                          label={`${syncResult.details.jobsDeleted} deleted`} 
+                          color="error" 
+                          size="small" 
+                        />
+                      )}
+                      {syncResult.details.failedUpdates !== undefined && (
+                        <Chip 
+                          label={`${syncResult.details.failedUpdates} failed`} 
+                          color="error" 
+                          size="small" 
+                        />
+                      )}
+                    </Box>
+                  )}
+                </Collapse>
+              </CardContent>
+            </Card>
+          )}
+
           <Box sx={{ display: 'flex', gap: 2, mb: 2 }}>
             <Button
               variant="contained"
               color="primary"
               onClick={handleSync}
               disabled={syncing}
+              startIcon={syncing ? <Refresh /> : <CloudDownload />}
             >
               {syncing ? 'Syncing...' : 'Sync Jobs'}
             </Button>
@@ -281,6 +560,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
               color="secondary"
               onClick={handleSyncToSheets}
               disabled={syncingToSheets || !selectedAccount.googleSheetsId}
+              startIcon={syncingToSheets ? <Refresh /> : <CloudUpload />}
             >
               {syncingToSheets ? 'Syncing to Sheets...' : 'Sync to Google Sheets'}
             </Button>
@@ -290,6 +570,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
                 color="info"
                 onClick={handleManualTrigger}
                 disabled={manualTriggering}
+                startIcon={manualTriggering ? <Refresh /> : <Refresh />}
               >
                 {manualTriggering ? 'Triggering...' : 'Test Auto Sync'}
               </Button>
