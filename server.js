@@ -8,7 +8,140 @@ import { formatInTimeZone } from "date-fns-tz";
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3001;
+
+// Enhanced error handling and monitoring utilities
+class CronJobMonitor {
+  constructor() {
+    this.startTime = Date.now();
+    this.metrics = {
+      accountsProcessed: 0,
+      accountsSucceeded: 0,
+      accountsFailed: 0,
+      totalJobsProcessed: 0,
+      totalJobsUpdated: 0,
+      totalJobsDeleted: 0,
+      totalErrors: 0,
+      apiCalls: 0,
+      apiErrors: 0,
+      databaseOperations: 0,
+      databaseErrors: 0,
+    };
+  }
+
+  logMetric(type, value = 1) {
+    if (this.metrics[type] !== undefined) {
+      this.metrics[type] += value;
+    }
+  }
+
+  getDuration() {
+    return Date.now() - this.startTime;
+  }
+
+  getSummary() {
+    return {
+      duration: this.getDuration(),
+      ...this.metrics,
+      successRate:
+        this.metrics.accountsProcessed > 0
+          ? (
+              (this.metrics.accountsSucceeded /
+                this.metrics.accountsProcessed) *
+              100
+            ).toFixed(2) + "%"
+          : "0%",
+    };
+  }
+}
+
+// Enhanced error handling with retry logic
+class RetryHandler {
+  static async withRetry(operation, maxRetries = 3, delay = 1000) {
+    let lastError;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error) {
+        lastError = error;
+
+        if (attempt === maxRetries) {
+          throw error;
+        }
+
+        // Exponential backoff
+        const waitTime = delay * Math.pow(2, attempt - 1);
+        console.log(
+          `⚠️ Attempt ${attempt} failed, retrying in ${waitTime}ms: ${error.message}`
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitTime));
+      }
+    }
+  }
+}
+
+// API rate limiting and timeout handling
+class APIManager {
+  static async fetchWithTimeout(url, options = {}, timeout = 30000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error.name === "AbortError") {
+        throw new Error(`Request timeout after ${timeout}ms`);
+      }
+      throw error;
+    }
+  }
+
+  static async handleRateLimit(response, retryAfter = 60) {
+    if (response.status === 429) {
+      console.log(`⏳ Rate limited, waiting ${retryAfter} seconds...`);
+      await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
+      return true;
+    }
+    return false;
+  }
+}
+
+// Database connection management with health checks
+class DatabaseManager {
+  static async healthCheck(db) {
+    try {
+      await db.admin().ping();
+      return true;
+    } catch (error) {
+      console.error("❌ Database health check failed:", error.message);
+      return false;
+    }
+  }
+
+  static async ensureHealthyConnection(db) {
+    const isHealthy = await this.healthCheck(db);
+    if (!isHealthy) {
+      throw new Error("Database connection is unhealthy");
+    }
+  }
+}
+
+// Global error handler
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error);
+  process.exit(1);
+});
 
 app.use(cors());
 app.use(express.json());
@@ -89,7 +222,7 @@ app.post("/api/accounts", async (req, res) => {
     const db = await ensureDbConnection();
     const accountData = {
       ...req.body,
-      syncEnabled: req.body.syncEnabled ?? false,
+      syncEnabled: false, // Disabled by default - using Vercel cron jobs instead
       syncFrequency: req.body.syncFrequency ?? "daily",
       syncTime: req.body.syncTime ?? "09:00",
       createdAt: new Date(),
@@ -757,10 +890,6 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
       return res.status(404).json({ error: "Account not found" });
     }
 
-    if (!account.syncEnabled) {
-      return res.status(400).json({ error: "Account sync is not enabled" });
-    }
-
     console.log(`⏰ Manual sync for account: ${account.name}`);
 
     // Sync jobs
@@ -973,118 +1102,87 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
 
 // Cron job endpoint
 app.get("/api/cron/sync-jobs", async (req, res) => {
+  const monitor = new CronJobMonitor();
+
   try {
-    console.log("🕐 Cron job triggered at:", new Date().toISOString());
-    console.log("🔧 Environment check:");
-    console.log(
-      "   - MONGODB_URI:",
-      process.env.MONGODB_URI ? "Present" : "Missing"
-    );
-    console.log(
-      "   - GOOGLE_SHEETS_CREDENTIALS:",
-      process.env.GOOGLE_SHEETS_CREDENTIALS ? "Present" : "Missing"
-    );
-    console.log(
-      "   - VITE_GOOGLE_SHEETS_CREDENTIALS:",
-      process.env.VITE_GOOGLE_SHEETS_CREDENTIALS ? "Present" : "Missing"
-    );
+    // Enhanced security validation
+    const userAgent = req.get("User-Agent");
+    const clientIP = req.ip || req.connection.remoteAddress;
 
-    // Ensure database connection
+    if (!userAgent || !userAgent.includes("vercel-cron")) {
+      console.log(`❌ Unauthorized cron access attempt:`, {
+        userAgent,
+        clientIP,
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(403).json({
+        error: "Unauthorized",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    console.log(`🕐 Vercel Cron Job triggered at: ${new Date().toISOString()}`);
+    console.log(`📊 Starting enhanced sync process...`);
+
+    // Ensure database connection with health check
     const db = await ensureDbConnection();
+    await DatabaseManager.ensureHealthyConnection(db);
+    monitor.logMetric("databaseOperations");
 
-    // Get all accounts with sync enabled
-    const accounts = await db
-      .collection("accounts")
-      .find({ syncEnabled: true })
-      .toArray();
-    console.log(`📋 Found ${accounts.length} accounts with sync enabled`);
+    // Get all accounts with enhanced error handling
+    const accounts = await RetryHandler.withRetry(async () => {
+      const result = await db.collection("accounts").find({}).toArray();
+      monitor.logMetric("databaseOperations");
+      return result;
+    });
 
-    const results = [];
+    if (accounts.length === 0) {
+      console.log("📭 No accounts found to sync");
+      return res.json({
+        message: "No accounts found to sync",
+        metrics: monitor.getSummary(),
+      });
+    }
 
-    for (const account of accounts) {
-      // Check if it's time to sync this account
-      const now = new Date();
-      const currentHour = now.getHours();
-      const currentMinute = now.getMinutes();
-      const [syncHour, syncMinute] = account.syncTime.split(":").map(Number);
+    console.log(`📋 Found ${accounts.length} accounts to sync`);
+    monitor.logMetric("accountsProcessed", accounts.length);
 
-      // For Hobby plan, be more flexible with timing (within 2 hours of scheduled time)
-      const timeDiff = Math.abs(
-        currentHour * 60 + currentMinute - (syncHour * 60 + syncMinute)
+    const syncResults = [];
+    const startTime = Date.now();
+
+    // Process accounts with enhanced error handling and monitoring
+    for (const [index, account] of accounts.entries()) {
+      const accountStartTime = Date.now();
+      console.log(
+        `⏰ Processing account ${index + 1}/${accounts.length}: ${account.name}`
       );
-      if (timeDiff > 120) {
-        // 2 hour window instead of 5 minutes
-        console.log(
-          `⏳ Not time to sync account: ${account.name} (current: ${currentHour}:${currentMinute}, sync: ${syncHour}:${syncMinute})`
-        );
-        continue;
-      }
 
-      // Check frequency - for Hobby plan, prioritize daily syncs
-      let shouldSync = false;
-      const lastSync = account.lastSyncDate
-        ? new Date(account.lastSyncDate)
-        : null;
-
-      switch (account.syncFrequency) {
-        case "daily":
-          // For daily, check if we haven't synced today
-          if (!lastSync) shouldSync = true;
-          else {
-            const today = new Date();
-            const lastSyncDate = new Date(lastSync);
-            shouldSync = today.toDateString() !== lastSyncDate.toDateString();
-          }
-          break;
-        case "weekly":
-          if (!lastSync) shouldSync = true;
-          else {
-            const daysSinceLastSync = Math.floor(
-              (now - lastSync) / (1000 * 60 * 60 * 24)
-            );
-            shouldSync = daysSinceLastSync >= 7;
-          }
-          break;
-        case "monthly":
-          if (!lastSync) shouldSync = true;
-          else {
-            const monthsSinceLastSync =
-              (now.getFullYear() - lastSync.getFullYear()) * 12 +
-              (now.getMonth() - lastSync.getMonth());
-            shouldSync = monthsSinceLastSync >= 1;
-          }
-          break;
-        case "custom":
-          // For custom, use 24-hour interval
-          if (!lastSync) shouldSync = true;
-          else {
-            const hoursSinceLastSync = (now - lastSync) / (1000 * 60 * 60);
-            shouldSync = hoursSinceLastSync >= 24;
-          }
-          break;
-      }
-
-      if (!shouldSync) {
-        console.log(
-          `⏳ Not time to sync account: ${account.name} (frequency: ${account.syncFrequency})`
-        );
-        continue;
-      }
-
-      console.log(`⏰ Time to sync account: ${account.name}`);
-
-      // Sync jobs
       try {
+        // Enhanced API call with timeout and retry
         const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
-        const response = await fetch(workizUrl);
 
-        if (!response.ok) {
-          throw new Error(`Workiz API error: ${response.status}`);
-        }
+        const response = await RetryHandler.withRetry(async () => {
+          monitor.logMetric("apiCalls");
+          const resp = await APIManager.fetchWithTimeout(workizUrl, {}, 45000); // 45 second timeout
+
+          // Handle rate limiting
+          if (await APIManager.handleRateLimit(resp)) {
+            throw new Error("Rate limited - retrying");
+          }
+
+          if (!resp.ok) {
+            monitor.logMetric("apiErrors");
+            throw new Error(
+              `Workiz API error: ${resp.status} - ${resp.statusText}`
+            );
+          }
+
+          return resp;
+        });
 
         const data = await response.json();
         if (!data.flag || !Array.isArray(data.data)) {
-          throw new Error("Invalid response from Workiz API");
+          throw new Error("Invalid response structure from Workiz API");
         }
 
         // Add accountId to each job
@@ -1093,7 +1191,9 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
           accountId: account._id || account.id,
         }));
 
-        // Upsert jobs into MongoDB
+        monitor.logMetric("totalJobsProcessed", jobs.length);
+
+        // Enhanced bulk operations with error handling
         const bulkOps = jobs.map((job) => ({
           updateOne: {
             filter: { UUID: job.UUID },
@@ -1103,312 +1203,378 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
         }));
 
         if (bulkOps.length > 0) {
-          const bulkResult = await db.collection("jobs").bulkWrite(bulkOps);
+          const bulkResult = await RetryHandler.withRetry(async () => {
+            monitor.logMetric("databaseOperations");
+            return await db.collection("jobs").bulkWrite(bulkOps);
+          });
+
           console.log(
-            `✅ Jobs sync completed: ${bulkResult.upsertedCount} new, ${bulkResult.modifiedCount} updated`
+            `✅ Jobs sync completed for ${account.name}: ${bulkResult.upsertedCount} new, ${bulkResult.modifiedCount} updated`
           );
         }
 
-        // Update existing jobs and clean up old ones
-        console.log(`🔄 Starting job update and cleanup process...`);
-
-        // Get all existing jobs for this account
-        const existingJobs = await db
-          .collection("jobs")
-          .find({ accountId: account._id || account.id })
-          .toArray();
-
+        // Enhanced job update and cleanup process
         console.log(
-          `📋 Found ${existingJobs.length} existing jobs in database`
+          `🔄 Starting job update and cleanup process for ${account.name}...`
         );
 
-        // Calculate 30-day cutoff date
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const accountId = account._id || account.id;
+        const existingJobs = await RetryHandler.withRetry(async () => {
+          monitor.logMetric("databaseOperations");
+          return await db.collection("jobs").find({ accountId }).toArray();
+        });
 
         let updatedJobsCount = 0;
         let deletedJobsCount = 0;
         let failedUpdatesCount = 0;
 
-        // Process jobs in batches of 29 with 60-second delays
-        const BATCH_SIZE = 29;
-        const DELAY_BETWEEN_BATCHES = 60000; // 60 seconds in milliseconds
-
+        // Process jobs in batches to avoid memory issues
+        const BATCH_SIZE = 50;
         for (let i = 0; i < existingJobs.length; i += BATCH_SIZE) {
           const batch = existingJobs.slice(i, i + BATCH_SIZE);
-          const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-          const totalBatches = Math.ceil(existingJobs.length / BATCH_SIZE);
 
-          console.log(
-            `📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} jobs)`
-          );
-
-          // Process each job in the current batch
           for (const existingJob of batch) {
-            try {
-              const jobDate = new Date(existingJob.JobDateTime);
-
-              // Check if job is older than 30 days
-              if (jobDate < thirtyDaysAgo) {
-                console.log(
-                  `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
-                );
-                await db
-                  .collection("jobs")
-                  .deleteOne({ UUID: existingJob.UUID });
-                deletedJobsCount++;
-                continue;
-              }
-
-              // Update job using Workiz API
-              console.log(`🔄 Updating job: ${existingJob.UUID}`);
-              const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
-
-              const updateResponse = await fetch(updateUrl);
-              if (updateResponse.ok) {
-                const updateData = await updateResponse.json();
-
-                if (updateData.flag && updateData.data) {
-                  // Update the job with fresh data from Workiz
-                  const updatedJob = {
-                    ...updateData.data,
-                    accountId: account._id || account.id,
-                  };
-
+            const latestJob = jobs.find((j) => j.UUID === existingJob.UUID);
+            if (latestJob) {
+              try {
+                await RetryHandler.withRetry(async () => {
+                  monitor.logMetric("databaseOperations");
                   await db
                     .collection("jobs")
-                    .updateOne(
-                      { UUID: existingJob.UUID },
-                      { $set: updatedJob }
-                    );
-
-                  updatedJobsCount++;
-                  console.log(`✅ Updated job: ${existingJob.UUID}`);
-                } else {
-                  console.log(
-                    `⚠️ Job not found in Workiz API: ${existingJob.UUID}`
-                  );
-                  // Job might have been deleted in Workiz, so delete from our database
-                  await db
-                    .collection("jobs")
-                    .deleteOne({ UUID: existingJob.UUID });
-                  deletedJobsCount++;
-                }
-              } else {
+                    .updateOne({ _id: existingJob._id }, { $set: latestJob });
+                });
+                updatedJobsCount++;
+                monitor.logMetric("totalJobsUpdated");
+              } catch (error) {
                 console.log(
-                  `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
+                  `❌ Failed to update job ${existingJob.UUID}:`,
+                  error.message
                 );
                 failedUpdatesCount++;
+                monitor.logMetric("totalErrors");
               }
-
-              // Add a small delay between individual job updates (100ms)
-              await new Promise((resolve) => setTimeout(resolve, 100));
-            } catch (error) {
-              console.log(
-                `❌ Error processing job ${existingJob.UUID}: ${error.message}`
-              );
-              failedUpdatesCount++;
             }
           }
 
-          // Add delay between batches (except for the last batch)
+          // Small delay between batches to prevent overwhelming the database
           if (i + BATCH_SIZE < existingJobs.length) {
-            console.log(`⏳ Waiting 60 seconds before next batch...`);
-            await new Promise((resolve) =>
-              setTimeout(resolve, DELAY_BETWEEN_BATCHES)
-            );
+            await new Promise((resolve) => setTimeout(resolve, 100));
           }
         }
 
-        console.log(`📊 Job update and cleanup completed:`);
+        // Delete jobs that no longer exist in Workiz
+        const workizJobIds = jobs.map((j) => j.UUID);
+        const jobsToDelete = existingJobs.filter(
+          (job) => !workizJobIds.includes(job.UUID)
+        );
+
+        if (jobsToDelete.length > 0) {
+          const deleteResult = await RetryHandler.withRetry(async () => {
+            monitor.logMetric("databaseOperations");
+            return await db.collection("jobs").deleteMany({
+              _id: { $in: jobsToDelete.map((j) => j._id) },
+            });
+          });
+          deletedJobsCount = deleteResult.deletedCount;
+          monitor.logMetric("totalJobsDeleted", deletedJobsCount);
+        }
+
+        const finalJobCount = await RetryHandler.withRetry(async () => {
+          monitor.logMetric("databaseOperations");
+          return await db.collection("jobs").countDocuments({ accountId });
+        });
+
+        const accountDuration = Date.now() - accountStartTime;
+        console.log(
+          `📊 Sync summary for ${account.name} (${accountDuration}ms):`
+        );
+        console.log(`   - Jobs from Workiz: ${jobs.length}`);
         console.log(`   - Updated: ${updatedJobsCount} jobs`);
         console.log(`   - Deleted (old): ${deletedJobsCount} jobs`);
         console.log(`   - Failed updates: ${failedUpdatesCount} jobs`);
+        console.log(`   - Final job count: ${finalJobCount} jobs`);
 
-        // Record sync history
+        // Enhanced sync history recording
         const syncHistoryRecord = {
           accountId: account._id || account.id,
           syncType: "jobs",
           status: "success",
+          timestamp: new Date(),
+          duration: accountDuration,
           details: {
             jobsFromWorkiz: jobs.length,
-            finalJobCount: await db
-              .collection("jobs")
-              .countDocuments({ accountId: account._id || account.id }),
+            finalJobCount: finalJobCount,
             jobsUpdated: updatedJobsCount,
             jobsDeleted: deletedJobsCount,
             failedUpdates: failedUpdatesCount,
           },
         };
 
-        await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        await RetryHandler.withRetry(async () => {
+          monitor.logMetric("databaseOperations");
+          await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        });
 
         // Update account's lastSyncDate
-        await db
-          .collection("accounts")
-          .updateOne(
-            { _id: account._id || new ObjectId(account.id) },
-            { $set: { lastSyncDate: new Date() } }
-          );
+        await RetryHandler.withRetry(async () => {
+          monitor.logMetric("databaseOperations");
+          await db
+            .collection("accounts")
+            .updateOne(
+              { _id: account._id || new ObjectId(account.id) },
+              { $set: { lastSyncDate: new Date() } }
+            );
+        });
 
-        results.push({
+        monitor.logMetric("accountsSucceeded");
+        syncResults.push({
           account: account.name,
-          jobsSync: {
-            success: true,
-            jobsSynced: jobs.length,
-            jobsUpdated: updatedJobsCount,
-            jobsDeleted: deletedJobsCount,
-            failedUpdates: failedUpdatesCount,
-          },
+          success: true,
+          duration: accountDuration,
+          jobsSynced: jobs.length,
+          jobsUpdated: updatedJobsCount,
+          jobsDeleted: deletedJobsCount,
+          failedUpdates: failedUpdatesCount,
         });
       } catch (error) {
-        console.error(
-          `❌ Jobs sync failed for account ${account.name}:`,
+        const accountDuration = Date.now() - accountStartTime;
+        console.log(
+          `❌ Sync failed for account ${account.name} (${accountDuration}ms):`,
           error.message
         );
+        monitor.logMetric("accountsFailed");
+        monitor.logMetric("totalErrors");
 
-        // Record failed sync history
+        // Enhanced failed sync history recording
         const syncHistoryRecord = {
           accountId: account._id || account.id,
           syncType: "jobs",
           status: "error",
+          timestamp: new Date(),
+          duration: accountDuration,
           errorMessage: error.message,
+          errorStack: error.stack,
           details: {},
         };
-        await db.collection("syncHistory").insertOne(syncHistoryRecord);
 
-        results.push({
-          account: account.name,
-          jobsSync: { success: false, error: error.message },
-        });
-      }
-
-      // Sync to sheets (if Google Sheets ID is configured)
-      if (account.googleSheetsId) {
         try {
-          // Get all jobs for this account
-          const allJobs = await db
-            .collection("jobs")
-            .find({ accountId: account._id || account.id })
-            .toArray();
-
-          // Filter jobs by sourceFilter
-          let filteredJobs = allJobs;
-          if (
-            account.sourceFilter &&
-            Array.isArray(account.sourceFilter) &&
-            account.sourceFilter.length > 0
-          ) {
-            filteredJobs = allJobs.filter((job) =>
-              account.sourceFilter.includes(job.JobSource)
-            );
-          }
-
-          if (filteredJobs.length > 0) {
-            // Parse Google Sheets credentials
-            const credentialsStr =
-              process.env.VITE_GOOGLE_SHEETS_CREDENTIALS ||
-              process.env.GOOGLE_SHEETS_CREDENTIALS;
-            if (!credentialsStr) {
-              throw new Error("Google Sheets credentials not found");
-            }
-
-            const credentials = JSON.parse(credentialsStr);
-            const auth = new google.auth.GoogleAuth({
-              credentials,
-              scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-            });
-
-            const sheets = google.sheets({ version: "v4", auth });
-
-            // Clear the sheet first (skip header row)
-            await sheets.spreadsheets.values.clear({
-              spreadsheetId: account.googleSheetsId,
-              range: "Sheet1!A2:F",
-            });
-
-            // Prepare data for Google Sheets
-            const values = filteredJobs.map((job) => {
-              const formattedTime =
-                formatInTimeZone(
-                  new Date(job.JobDateTime),
-                  "America/Los_Angeles",
-                  "yyyy-MM-dd'T'HH:mm:ss"
-                ) + " America/Los_Angeles";
-
-              return [
-                job.Phone || "",
-                formattedTime,
-                "Google Ads Convert",
-                "",
-                account.defaultConversionValue || 0,
-                "USD",
-              ];
-            });
-
-            // Add to Google Sheet
-            const response = await sheets.spreadsheets.values.append({
-              spreadsheetId: account.googleSheetsId,
-              range: "Sheet1!A2:F",
-              valueInputOption: "USER_ENTERED",
-              requestBody: { values },
-            });
-
-            // Record sync history
-            const syncHistoryRecord = {
-              accountId: account._id || account.id,
-              syncType: "sheets",
-              status: "success",
-              details: {
-                totalJobs: allJobs.length,
-                filteredJobs: filteredJobs.length,
-                updatedRows: response.data.updates?.updatedRows || 0,
-                sourceFilter: account.sourceFilter,
-              },
-            };
-
-            await db.collection("syncHistory").insertOne(syncHistoryRecord);
-
-            results.push({
-              account: account.name,
-              sheetsSync: {
-                success: true,
-                rowsUpdated: response.data.updates?.updatedRows || 0,
-              },
-            });
-          }
-        } catch (error) {
-          console.error(
-            `❌ Sheets sync failed for account ${account.name}:`,
-            error.message
-          );
-
-          // Record failed sync history
-          const syncHistoryRecord = {
-            accountId: account._id || account.id,
-            syncType: "sheets",
-            status: "error",
-            errorMessage: error.message,
-            details: {},
-          };
           await db.collection("syncHistory").insertOne(syncHistoryRecord);
-
-          results.push({
-            account: account.name,
-            sheetsSync: { success: false, error: error.message },
-          });
+          monitor.logMetric("databaseOperations");
+        } catch (historyError) {
+          console.error(
+            "❌ Failed to record sync history:",
+            historyError.message
+          );
+          monitor.logMetric("databaseErrors");
         }
+
+        syncResults.push({
+          account: account.name,
+          success: false,
+          duration: accountDuration,
+          error: error.message,
+        });
       }
     }
 
-    console.log("✅ Cron job completed successfully");
-    res.status(200).json({
-      message: "Cron job completed",
+    const totalDuration = Date.now() - startTime;
+    const successfulSyncs = syncResults.filter((r) => r.success).length;
+    const failedSyncs = syncResults.filter((r) => !r.success).length;
+
+    console.log(`🎯 Enhanced cron job completed in ${totalDuration}ms:`);
+    console.log(`   - Successful: ${successfulSyncs} accounts`);
+    console.log(`   - Failed: ${failedSyncs} accounts`);
+    console.log(`   - Success rate: ${monitor.getSummary().successRate}`);
+
+    // Log comprehensive metrics
+    const metrics = monitor.getSummary();
+    console.log(`📈 Performance metrics:`, metrics);
+
+    res.json({
+      message: `Enhanced cron job completed: ${successfulSyncs} successful, ${failedSyncs} failed`,
+      duration: totalDuration,
+      metrics: metrics,
+      results: syncResults,
       timestamp: new Date().toISOString(),
-      results,
     });
   } catch (error) {
-    console.error("❌ Cron job failed:", error);
+    const duration = monitor.getDuration();
+    console.log(
+      `❌ Enhanced cron job error after ${duration}ms: ${error.message}`
+    );
+    console.error("Full error:", error);
+
+    monitor.logMetric("totalErrors");
+
+    res.status(500).json({
+      error: error.message,
+      duration: duration,
+      metrics: monitor.getSummary(),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Enhanced monitoring and health check endpoints
+app.get("/api/health", async (req, res) => {
+  try {
+    const db = await ensureDbConnection();
+    const dbHealthy = await DatabaseManager.healthCheck(db);
+
+    const healthStatus = {
+      status: dbHealthy ? "healthy" : "unhealthy",
+      timestamp: new Date().toISOString(),
+      services: {
+        database: dbHealthy ? "connected" : "disconnected",
+        api: "running",
+      },
+      uptime: process.uptime(),
+      memory: process.memoryUsage(),
+      environment: process.env.NODE_ENV || "development",
+    };
+
+    res.status(dbHealthy ? 200 : 503).json(healthStatus);
+  } catch (error) {
+    res.status(503).json({
+      status: "unhealthy",
+      timestamp: new Date().toISOString(),
+      error: error.message,
+      services: {
+        database: "error",
+        api: "running",
+      },
+    });
+  }
+});
+
+app.get("/api/metrics", async (req, res) => {
+  try {
+    const db = await ensureDbConnection();
+
+    // Get basic metrics
+    const accountCount = await db.collection("accounts").countDocuments();
+    const jobCount = await db.collection("jobs").countDocuments();
+    const syncHistoryCount = await db
+      .collection("syncHistory")
+      .countDocuments();
+
+    // Get recent sync history
+    const recentSyncs = await db
+      .collection("syncHistory")
+      .find({})
+      .sort({ timestamp: -1 })
+      .limit(10)
+      .toArray();
+
+    // Calculate success rate
+    const successfulSyncs = recentSyncs.filter(
+      (sync) => sync.status === "success"
+    ).length;
+    const successRate =
+      recentSyncs.length > 0
+        ? ((successfulSyncs / recentSyncs.length) * 100).toFixed(2)
+        : 0;
+
+    const metrics = {
+      timestamp: new Date().toISOString(),
+      counts: {
+        accounts: accountCount,
+        jobs: jobCount,
+        syncHistory: syncHistoryCount,
+      },
+      recentSyncs: {
+        total: recentSyncs.length,
+        successful: successfulSyncs,
+        failed: recentSyncs.length - successfulSyncs,
+        successRate: `${successRate}%`,
+      },
+      system: {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        nodeVersion: process.version,
+        environment: process.env.NODE_ENV || "development",
+      },
+    };
+
+    res.json(metrics);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+app.get("/api/cron/status", async (req, res) => {
+  try {
+    const db = await ensureDbConnection();
+
+    // Get last cron job execution
+    const lastCronSync = await db
+      .collection("syncHistory")
+      .find({ syncType: "jobs" })
+      .sort({ timestamp: -1 })
+      .limit(1)
+      .toArray();
+
+    // Get cron job statistics for the last 7 days
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const recentCronSyncs = await db
+      .collection("syncHistory")
+      .find({
+        syncType: "jobs",
+        timestamp: { $gte: sevenDaysAgo },
+      })
+      .toArray();
+
+    const successfulCronSyncs = recentCronSyncs.filter(
+      (sync) => sync.status === "success"
+    );
+    const failedCronSyncs = recentCronSyncs.filter(
+      (sync) => sync.status === "error"
+    );
+
+    const cronStatus = {
+      timestamp: new Date().toISOString(),
+      lastExecution:
+        lastCronSync.length > 0
+          ? {
+              timestamp: lastCronSync[0].timestamp,
+              status: lastCronSync[0].status,
+              duration: lastCronSync[0].duration,
+              details: lastCronSync[0].details,
+            }
+          : null,
+      last7Days: {
+        total: recentCronSyncs.length,
+        successful: successfulCronSyncs.length,
+        failed: failedCronSyncs.length,
+        successRate:
+          recentCronSyncs.length > 0
+            ? `${(
+                (successfulCronSyncs.length / recentCronSyncs.length) *
+                100
+              ).toFixed(2)}%`
+            : "0%",
+        averageDuration:
+          successfulCronSyncs.length > 0
+            ? successfulCronSyncs.reduce(
+                (sum, sync) => sum + (sync.duration || 0),
+                0
+              ) / successfulCronSyncs.length
+            : 0,
+      },
+      nextScheduled: {
+        time: "09:00 UTC",
+        frequency: "Daily",
+        cronExpression: "0 9 * * *",
+      },
+    };
+
+    res.json(cronStatus);
+  } catch (error) {
     res.status(500).json({
       error: error.message,
       timestamp: new Date().toISOString(),

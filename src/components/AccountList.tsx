@@ -20,6 +20,10 @@ import {
   MenuItem,
   FormControlLabel,
   Switch,
+  Card,
+  CardContent,
+  Chip,
+  AlertTitle,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -337,6 +341,12 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
               />
             </Box>
           )}
+
+          <Alert severity="info" sx={{ mt: 3, mb: 2 }}>
+            <AlertTitle>Automated Sync</AlertTitle>
+            Automated syncing is handled by Vercel Cron Jobs running daily at 9:00 AM UTC. 
+            Manual sync options are available in the Jobs section.
+          </Alert>
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCancel}>Cancel</Button>

@@ -12,6 +12,7 @@ import {
   MenuItem,
   FormControlLabel,
   Switch,
+  AlertTitle,
 } from '@mui/material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
@@ -175,6 +176,53 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
           />
         </Box>
       )}
+
+      {/* Automated Sync Settings - DISABLED (Using Vercel Cron Job at 9am UTC)
+      <FormControlLabel
+        control={
+          <Switch
+            checked={formData.syncEnabled || false}
+            onChange={(e) => setFormData({ ...formData, syncEnabled: e.target.checked })}
+          />
+        }
+        label="Enable Automated Syncing"
+        sx={{ mb: 2 }}
+      />
+
+      {formData.syncEnabled && (
+        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+          <FormControl sx={{ minWidth: 200, flex: 1 }}>
+            <InputLabel>Sync Frequency</InputLabel>
+            <Select
+              value={formData.syncFrequency || 'daily'}
+              label="Sync Frequency"
+              onChange={(e) => setFormData({ ...formData, syncFrequency: e.target.value as any })}
+            >
+              <MenuItem value="daily">Daily</MenuItem>
+              <MenuItem value="weekly">Weekly</MenuItem>
+              <MenuItem value="monthly">Monthly</MenuItem>
+              <MenuItem value="custom">Custom</MenuItem>
+            </Select>
+          </FormControl>
+          <TextField
+            sx={{ minWidth: 200, flex: 1 }}
+            label="Sync Time"
+            type="time"
+            value={formData.syncTime || '09:00'}
+            onChange={(e) => setFormData({ ...formData, syncTime: e.target.value })}
+            margin="normal"
+            InputLabelProps={{ shrink: true }}
+            helperText="Time to run sync (24-hour format)"
+          />
+        </Box>
+      )}
+      */}
+
+      <Alert severity="info" sx={{ mb: 2 }}>
+        <AlertTitle>Automated Sync</AlertTitle>
+        Automated syncing is handled by Vercel Cron Jobs running daily at 9:00 AM UTC. 
+        Manual sync options are available in the Jobs section.
+      </Alert>
 
       <Button
         type="submit"

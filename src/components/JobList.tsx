@@ -7,6 +7,7 @@ import {
   Select,
   MenuItem,
   Alert,
+  AlertTitle,
   Button,
   Link,
   LinearProgress,
@@ -608,7 +609,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
                 disabled={manualTriggering}
                 startIcon={manualTriggering ? <Refresh /> : <Refresh />}
               >
-                {manualTriggering ? 'Triggering...' : 'Test Auto Sync'}
+                {manualTriggering ? 'Triggering...' : 'Manual Sync'}
               </Button>
             )}
           </Box>
@@ -622,6 +623,11 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
               Please add a Google Sheet ID to sync jobs to Google Sheets.
             </Alert>
           )}
+          <Alert severity="info" sx={{ mb: 2 }}>
+            <AlertTitle>Automated Sync</AlertTitle>
+            Jobs are automatically synced daily at 9:00 AM UTC via Vercel Cron Jobs. 
+            Use the manual sync buttons above for immediate updates.
+          </Alert>
           {error && <Alert severity="error">{error}</Alert>}
           
           {/* Sync History Section */}
