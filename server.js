@@ -517,7 +517,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
               await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
             });
             deletedJobsCount++;
-            monitor.logMetric("totalJobsDeleted");
             continue;
           }
 
@@ -526,7 +525,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
           const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
           const updateResponse = await RetryHandler.withRetry(async () => {
-            monitor.logMetric("apiCalls");
             return await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
           });
 
@@ -541,14 +539,12 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
               };
 
               await RetryHandler.withRetry(async () => {
-                monitor.logMetric("databaseOperations");
                 await db
                   .collection("jobs")
                   .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
               });
 
               updatedJobsCount++;
-              monitor.logMetric("totalJobsUpdated");
               console.log(`✅ Updated job: ${existingJob.UUID}`);
             } else {
               console.log(
@@ -556,20 +552,17 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
               );
               // Job might have been deleted in Workiz, so delete from our database
               await RetryHandler.withRetry(async () => {
-                monitor.logMetric("databaseOperations");
                 await db
                   .collection("jobs")
                   .deleteOne({ UUID: existingJob.UUID });
               });
               deletedJobsCount++;
-              monitor.logMetric("totalJobsDeleted");
             }
           } else {
             console.log(
               `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
             );
             failedUpdatesCount++;
-            monitor.logMetric("totalErrors");
           }
 
           // Add a small delay between individual job updates (100ms)
@@ -579,7 +572,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
             `❌ Error processing job ${existingJob.UUID}: ${error.message}`
           );
           failedUpdatesCount++;
-          monitor.logMetric("totalErrors");
         }
       }
 
@@ -1005,7 +997,11 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
               console.log(
                 `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
               );
-              await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+              await RetryHandler.withRetry(async () => {
+                await db
+                  .collection("jobs")
+                  .deleteOne({ UUID: existingJob.UUID });
+              });
               deletedJobsCount++;
               continue;
             }
@@ -1014,7 +1010,10 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
             console.log(`🔄 Updating job: ${existingJob.UUID}`);
             const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
-            const updateResponse = await fetch(updateUrl);
+            const updateResponse = await RetryHandler.withRetry(async () => {
+              return await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
+            });
+
             if (updateResponse.ok) {
               const updateData = await updateResponse.json();
 
@@ -1025,9 +1024,14 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
                   accountId: account._id || account.id,
                 };
 
-                await db
-                  .collection("jobs")
-                  .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
+                await RetryHandler.withRetry(async () => {
+                  await db
+                    .collection("jobs")
+                    .updateOne(
+                      { UUID: existingJob.UUID },
+                      { $set: updatedJob }
+                    );
+                });
 
                 updatedJobsCount++;
                 console.log(`✅ Updated job: ${existingJob.UUID}`);
@@ -1036,9 +1040,11 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
                   `⚠️ Job not found in Workiz API: ${existingJob.UUID}`
                 );
                 // Job might have been deleted in Workiz, so delete from our database
-                await db
-                  .collection("jobs")
-                  .deleteOne({ UUID: existingJob.UUID });
+                await RetryHandler.withRetry(async () => {
+                  await db
+                    .collection("jobs")
+                    .deleteOne({ UUID: existingJob.UUID });
+                });
                 deletedJobsCount++;
               }
             } else {
@@ -1088,15 +1094,19 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
         },
       };
 
-      await db.collection("syncHistory").insertOne(syncHistoryRecord);
+      await RetryHandler.withRetry(async () => {
+        await db.collection("syncHistory").insertOne(syncHistoryRecord);
+      });
 
       // Update account's lastSyncDate
-      await db
-        .collection("accounts")
-        .updateOne(
-          { _id: account._id || new ObjectId(account.id) },
-          { $set: { lastSyncDate: new Date() } }
-        );
+      await RetryHandler.withRetry(async () => {
+        await db
+          .collection("accounts")
+          .updateOne(
+            { _id: account._id || new ObjectId(account.id) },
+            { $set: { lastSyncDate: new Date() } }
+          );
+      });
 
       res.json({
         message: `Manual sync completed for account ${account.name}`,
@@ -1122,7 +1132,9 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
         errorMessage: error.message,
         details: {},
       };
-      await db.collection("syncHistory").insertOne(syncHistoryRecord);
+      await RetryHandler.withRetry(async () => {
+        await db.collection("syncHistory").insertOne(syncHistoryRecord);
+      });
 
       res.status(500).json({
         error: error.message,
