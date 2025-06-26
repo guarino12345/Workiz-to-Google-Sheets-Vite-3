@@ -808,12 +808,28 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         );
       }
 
+      // New conversion value logic
+      let conversionValue = account.defaultConversionValue || 0;
+
+      // If JobTotalPrice has a value and is not 0, use it
+      if (job.JobTotalPrice && job.JobTotalPrice !== 0) {
+        conversionValue = job.JobTotalPrice;
+      }
+
+      // If Status is cancelled (case-insensitive), set to 0
+      if (
+        job.Status &&
+        ["Cancelled", "Canceled", "cancelled", "CANCELLED"].includes(job.Status)
+      ) {
+        conversionValue = 0;
+      }
+
       return [
         job.Phone || "", // Caller's Phone Number
         formattedTime, // Call Start Time
         "Google Ads Convert", // Conversion Name
         "", // Conversion Time (blank)
-        account.defaultConversionValue || 0, // Conversion Value
+        conversionValue, // Conversion Value
         "USD", // Conversion Currency
       ];
     });
@@ -1485,6 +1501,348 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
     const duration = monitor.getDuration();
     console.log(
       `❌ Enhanced cron job error after ${duration}ms: ${error.message}`
+    );
+    console.error("Full error:", error);
+
+    monitor.logMetric("totalErrors");
+
+    res.status(500).json({
+      error: error.message,
+      duration: duration,
+      metrics: monitor.getSummary(),
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Cron job endpoint for Google Sheets sync
+app.get("/api/cron/sync-sheets", async (req, res) => {
+  const monitor = new CronJobMonitor();
+
+  try {
+    // Enhanced security validation
+    const userAgent = req.get("User-Agent");
+    const clientIP = req.ip || req.connection.remoteAddress;
+
+    if (!userAgent || !userAgent.includes("vercel-cron")) {
+      console.log(`❌ Unauthorized cron access attempt:`, {
+        userAgent,
+        clientIP,
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(403).json({
+        error: "Unauthorized",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    console.log(
+      `🕐 Vercel Cron Job for Google Sheets sync triggered at: ${new Date().toISOString()}`
+    );
+    console.log(`📊 Starting Google Sheets sync process...`);
+
+    // Ensure database connection with health check
+    const db = await ensureDbConnection();
+    await DatabaseManager.ensureHealthyConnection(db);
+    monitor.logMetric("databaseOperations");
+
+    // Get all accounts with Google Sheets ID
+    const accounts = await RetryHandler.withRetry(async () => {
+      const result = await db
+        .collection("accounts")
+        .find({
+          googleSheetsId: { $exists: true, $ne: "" },
+        })
+        .toArray();
+      monitor.logMetric("databaseOperations");
+      return result;
+    });
+
+    if (accounts.length === 0) {
+      console.log("📭 No accounts with Google Sheets ID found to sync");
+      return res.json({
+        message: "No accounts with Google Sheets ID found to sync",
+        metrics: monitor.getSummary(),
+      });
+    }
+
+    console.log(
+      `📋 Found ${accounts.length} accounts with Google Sheets ID to sync`
+    );
+    monitor.logMetric("accountsProcessed", accounts.length);
+
+    const syncResults = [];
+    const startTime = Date.now();
+
+    // Parse Google Sheets credentials once
+    let credentials;
+    try {
+      const credentialsStr =
+        process.env.VITE_GOOGLE_SHEETS_CREDENTIALS ||
+        process.env.GOOGLE_SHEETS_CREDENTIALS;
+
+      if (!credentialsStr) {
+        throw new Error(
+          "Google Sheets credentials not found in environment variables"
+        );
+      }
+
+      credentials = JSON.parse(credentialsStr);
+      console.log(`✅ Google Sheets credentials parsed successfully`);
+    } catch (error) {
+      console.error("❌ Error parsing Google Sheets credentials:", error);
+      return res.status(500).json({
+        error: "Invalid Google Sheets credentials format",
+        details: error.message,
+      });
+    }
+
+    // Initialize Google Sheets client
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+    });
+
+    const sheets = google.sheets({ version: "v4", auth });
+    console.log(`🔐 Google Sheets client initialized`);
+
+    // Process accounts with enhanced error handling and monitoring
+    for (const [index, account] of accounts.entries()) {
+      const accountStartTime = Date.now();
+      console.log(
+        `⏰ Processing Google Sheets sync for account ${index + 1}/${
+          accounts.length
+        }: ${account.name}`
+      );
+
+      try {
+        // Get all jobs for this account
+        const allJobs = await RetryHandler.withRetry(async () => {
+          monitor.logMetric("databaseOperations");
+          return await db
+            .collection("jobs")
+            .find({ accountId: account._id || account.id })
+            .toArray();
+        });
+
+        console.log(
+          `📊 Found ${allJobs.length} total jobs for account ${account.name}`
+        );
+
+        // Filter jobs by sourceFilter
+        let filteredJobs = allJobs;
+        if (
+          account.sourceFilter &&
+          Array.isArray(account.sourceFilter) &&
+          account.sourceFilter.length > 0
+        ) {
+          filteredJobs = allJobs.filter((job) =>
+            account.sourceFilter.includes(job.JobSource)
+          );
+          console.log(
+            `🔍 Filtered jobs by sourceFilter: ${allJobs.length} → ${filteredJobs.length} jobs`
+          );
+        } else {
+          console.log(
+            `⚠️ No sourceFilter configured, using all ${allJobs.length} jobs`
+          );
+        }
+
+        if (filteredJobs.length === 0) {
+          console.log(
+            `⚠️ No jobs match the sourceFilter criteria for ${account.name}`
+          );
+          syncResults.push({
+            account: account.name,
+            success: true,
+            duration: Date.now() - accountStartTime,
+            jobsSynced: 0,
+            message: "No jobs to sync",
+          });
+          continue;
+        }
+
+        // Clear the sheet first (skip header row)
+        console.log(
+          `🧹 Clearing existing data from sheet for ${account.name}...`
+        );
+        await RetryHandler.withRetry(async () => {
+          await sheets.spreadsheets.values.clear({
+            spreadsheetId: account.googleSheetsId,
+            range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+          });
+        });
+        console.log(`✅ Sheet cleared successfully for ${account.name}`);
+
+        // Prepare data for Google Sheets with new conversion value logic
+        console.log(
+          `📝 Preparing ${filteredJobs.length} jobs for Google Sheets...`
+        );
+        const values = filteredJobs.map((job, index) => {
+          const formattedTime =
+            formatInTimeZone(
+              new Date(job.JobDateTime),
+              "America/Los_Angeles",
+              "yyyy-MM-dd'T'HH:mm:ss"
+            ) + " America/Los_Angeles";
+
+          // New conversion value logic
+          let conversionValue = account.defaultConversionValue || 0;
+
+          // If JobTotalPrice has a value and is not 0, use it
+          if (job.JobTotalPrice && job.JobTotalPrice !== 0) {
+            conversionValue = job.JobTotalPrice;
+          }
+
+          // If Status is cancelled (case-insensitive), set to 0
+          if (
+            job.Status &&
+            ["Cancelled", "Canceled", "cancelled", "CANCELLED"].includes(
+              job.Status
+            )
+          ) {
+            conversionValue = 0;
+          }
+
+          return [
+            job.Phone || "", // Caller's Phone Number
+            formattedTime, // Call Start Time
+            "Google Ads Convert", // Conversion Name
+            "", // Conversion Time (blank)
+            conversionValue, // Conversion Value
+            "USD", // Conversion Currency
+          ];
+        });
+
+        console.log(`📊 Prepared ${values.length} rows for Google Sheets`);
+
+        // Add to Google Sheet (starting from row 2 to preserve headers)
+        console.log(`📤 Adding data to Google Sheet for ${account.name}...`);
+        const response = await RetryHandler.withRetry(async () => {
+          monitor.logMetric("apiCalls");
+          return await sheets.spreadsheets.values.append({
+            spreadsheetId: account.googleSheetsId,
+            range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values,
+            },
+          });
+        });
+
+        console.log(
+          `✅ Google Sheets sync completed successfully for ${account.name}`
+        );
+        console.log(
+          `📈 Updated rows: ${response.data.updates?.updatedRows || 0}`
+        );
+
+        // Record sync history
+        const syncHistoryRecord = {
+          accountId: account._id || account.id,
+          syncType: "sheets",
+          status: "success",
+          timestamp: new Date(),
+          duration: Date.now() - accountStartTime,
+          details: {
+            totalJobs: allJobs.length,
+            filteredJobs: filteredJobs.length,
+            updatedRows: response.data.updates?.updatedRows || 0,
+            sourceFilter: account.sourceFilter,
+            sampleJobSources: [
+              ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
+            ],
+          },
+        };
+
+        await RetryHandler.withRetry(async () => {
+          monitor.logMetric("databaseOperations");
+          await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        });
+
+        const accountDuration = Date.now() - accountStartTime;
+        console.log(
+          `📊 Google Sheets sync summary for ${account.name} (${accountDuration}ms):`
+        );
+        console.log(`   - Total jobs: ${allJobs.length}`);
+        console.log(`   - Filtered jobs: ${filteredJobs.length}`);
+        console.log(
+          `   - Updated rows: ${response.data.updates?.updatedRows || 0}`
+        );
+
+        monitor.logMetric("accountsSucceeded");
+        syncResults.push({
+          account: account.name,
+          success: true,
+          duration: accountDuration,
+          jobsSynced: filteredJobs.length,
+          updatedRows: response.data.updates?.updatedRows || 0,
+        });
+      } catch (error) {
+        const accountDuration = Date.now() - accountStartTime;
+        console.log(
+          `❌ Google Sheets sync failed for account ${account.name} (${accountDuration}ms):`,
+          error.message
+        );
+        monitor.logMetric("accountsFailed");
+        monitor.logMetric("totalErrors");
+
+        // Enhanced failed sync history recording
+        const syncHistoryRecord = {
+          accountId: account._id || account.id,
+          syncType: "sheets",
+          status: "error",
+          timestamp: new Date(),
+          duration: accountDuration,
+          errorMessage: error.message,
+          errorStack: error.stack,
+          details: {},
+        };
+
+        try {
+          await db.collection("syncHistory").insertOne(syncHistoryRecord);
+          monitor.logMetric("databaseOperations");
+        } catch (historyError) {
+          console.error(
+            "❌ Failed to record sync history:",
+            historyError.message
+          );
+          monitor.logMetric("databaseErrors");
+        }
+
+        syncResults.push({
+          account: account.name,
+          success: false,
+          duration: accountDuration,
+          error: error.message,
+        });
+      }
+    }
+
+    const totalDuration = Date.now() - startTime;
+    const successfulSyncs = syncResults.filter((r) => r.success).length;
+    const failedSyncs = syncResults.filter((r) => !r.success).length;
+
+    console.log(`🎯 Google Sheets cron job completed in ${totalDuration}ms:`);
+    console.log(`   - Successful: ${successfulSyncs} accounts`);
+    console.log(`   - Failed: ${failedSyncs} accounts`);
+    console.log(`   - Success rate: ${monitor.getSummary().successRate}`);
+
+    // Log comprehensive metrics
+    const metrics = monitor.getSummary();
+    console.log(`📈 Performance metrics:`, metrics);
+
+    res.json({
+      message: `Google Sheets cron job completed: ${successfulSyncs} successful, ${failedSyncs} failed`,
+      duration: totalDuration,
+      metrics: metrics,
+      results: syncResults,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    const duration = monitor.getDuration();
+    console.log(
+      `❌ Google Sheets cron job error after ${duration}ms: ${error.message}`
     );
     console.error("Full error:", error);
 
