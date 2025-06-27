@@ -12,27 +12,132 @@ const port = process.env.PORT || 3001;
 
 // Enhanced error handling utilities
 
+// Circuit Breaker Pattern for API resilience
+class CircuitBreaker {
+  constructor(failureThreshold = 5, recoveryTimeout = 300000) {
+    // 5 failures, 5 minutes recovery
+    this.failureThreshold = failureThreshold;
+    this.recoveryTimeout = recoveryTimeout;
+    this.failureCount = 0;
+    this.lastFailureTime = null;
+    this.state = "CLOSED"; // CLOSED, OPEN, HALF_OPEN
+  }
+
+  async execute(operation) {
+    if (this.state === "OPEN") {
+      if (Date.now() - this.lastFailureTime >= this.recoveryTimeout) {
+        console.log("🔄 Circuit breaker transitioning to HALF_OPEN state");
+        this.state = "HALF_OPEN";
+      } else {
+        throw new Error("Circuit breaker is OPEN - too many recent failures");
+      }
+    }
+
+    try {
+      const result = await operation();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  onSuccess() {
+    this.failureCount = 0;
+    this.state = "CLOSED";
+    console.log("✅ Circuit breaker reset to CLOSED state");
+  }
+
+  onFailure() {
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+
+    if (this.failureCount >= this.failureThreshold) {
+      this.state = "OPEN";
+      console.log(
+        `🚨 Circuit breaker opened after ${
+          this.failureCount
+        } failures. Will retry in ${this.recoveryTimeout / 1000} seconds`
+      );
+    } else {
+      console.log(
+        `⚠️ Circuit breaker failure count: ${this.failureCount}/${this.failureThreshold}`
+      );
+    }
+  }
+
+  getState() {
+    return {
+      state: this.state,
+      failureCount: this.failureCount,
+      lastFailureTime: this.lastFailureTime,
+      timeUntilRecovery:
+        this.state === "OPEN"
+          ? Math.max(
+              0,
+              this.recoveryTimeout - (Date.now() - this.lastFailureTime)
+            )
+          : 0,
+    };
+  }
+}
+
+// Global circuit breaker instances
+const workizCircuitBreaker = new CircuitBreaker(5, 300000); // 5 failures, 5 minutes recovery
+const sheetsCircuitBreaker = new CircuitBreaker(3, 180000); // 3 failures, 3 minutes recovery
+
 // Enhanced error handling with retry logic
 class RetryHandler {
-  static async withRetry(operation, maxRetries = 3, delay = 1000) {
+  static async withRetry(
+    operation,
+    maxRetries = 3,
+    delay = 1000,
+    circuitBreaker = null
+  ) {
     let lastError;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // Use circuit breaker if provided
+        if (circuitBreaker) {
+          return await circuitBreaker.execute(operation);
+        }
         return await operation();
       } catch (error) {
         lastError = error;
 
-        if (attempt === maxRetries) {
+        // Check if it's a circuit breaker error
+        if (error.message.includes("Circuit breaker is OPEN")) {
+          console.log(`🚨 Circuit breaker blocked operation: ${error.message}`);
           throw error;
         }
 
-        // Exponential backoff
-        const waitTime = delay * Math.pow(2, attempt - 1);
-        console.log(
-          `⚠️ Attempt ${attempt} failed, retrying in ${waitTime}ms: ${error.message}`
-        );
-        await new Promise((resolve) => setTimeout(resolve, waitTime));
+        // Handle 520 errors with longer delays
+        const is520Error =
+          error.message.includes("520") ||
+          (error.response && error.response.status === 520);
+
+        if (is520Error) {
+          console.log(
+            `⚠️ 520 error detected on attempt ${attempt}, using extended delay`
+          );
+          // Use longer delays for 520 errors: 10s, 20s, 40s
+          const waitTime = 10000 * Math.pow(2, attempt - 1);
+          console.log(
+            `⏳ Waiting ${waitTime / 1000}s before retry due to 520 error`
+          );
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+        } else if (attempt === maxRetries) {
+          throw error;
+        } else {
+          // Exponential backoff for other errors
+          const waitTime = delay * Math.pow(2, attempt - 1);
+          console.log(
+            `⚠️ Attempt ${attempt} failed, retrying in ${waitTime}ms: ${error.message}`
+          );
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+        }
       }
     }
   }
@@ -50,6 +155,13 @@ class APIManager {
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
+
+      // Check for 520 error specifically
+      if (response.status === 520) {
+        console.log(`🚨 520 error detected from Workiz API`);
+        throw new Error(`Workiz API 520 error - server is experiencing issues`);
+      }
+
       return response;
     } catch (error) {
       clearTimeout(timeoutId);
@@ -362,13 +474,37 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
     const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
     console.log(`🌐 Fetching from Workiz: ${workizUrl}`);
 
-    const response = await fetch(workizUrl);
+    const response = await RetryHandler.withRetry(
+      async () => {
+        const resp = await APIManager.fetchWithTimeout(workizUrl, {}, 45000);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.log(`❌ Workiz API error: ${response.status} - ${errorText}`);
-      return res.status(500).json({ error: errorText });
-    }
+        if (!resp.ok) {
+          const errorText = await resp.text();
+          console.log(`❌ Workiz API error: ${resp.status} - ${errorText}`);
+
+          // Check if response is HTML (520 error page)
+          if (
+            errorText.includes('<div class="text-container">') ||
+            errorText.includes("Oops!") ||
+            errorText.includes("Something went wrong")
+          ) {
+            console.log(
+              `🚨 Detected HTML error page from Workiz API (likely 520 error)`
+            );
+            throw new Error(
+              `Workiz API 520 error - server is experiencing issues`
+            );
+          }
+
+          throw new Error(`Workiz API error: ${resp.status} - ${errorText}`);
+        }
+
+        return resp;
+      },
+      5,
+      2000,
+      workizCircuitBreaker
+    ); // 5 retries, 2s base delay, with circuit breaker
 
     const data = await response.json();
     console.log(
@@ -487,9 +623,45 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
           console.log(`🔄 Updating job: ${existingJob.UUID}`);
           const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
-          const updateResponse = await RetryHandler.withRetry(async () => {
-            return await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
-          });
+          const updateResponse = await RetryHandler.withRetry(
+            async () => {
+              const resp = await APIManager.fetchWithTimeout(
+                updateUrl,
+                {},
+                30000
+              );
+
+              if (!resp.ok) {
+                const errorText = await resp.text();
+                console.log(
+                  `❌ Job update error: ${resp.status} - ${errorText}`
+                );
+
+                // Check if response is HTML (520 error page)
+                if (
+                  errorText.includes('<div class="text-container">') ||
+                  errorText.includes("Oops!") ||
+                  errorText.includes("Something went wrong")
+                ) {
+                  console.log(
+                    `🚨 Detected HTML error page from Workiz API (likely 520 error)`
+                  );
+                  throw new Error(
+                    `Workiz API 520 error - server is experiencing issues`
+                  );
+                }
+
+                throw new Error(
+                  `Job update error: ${resp.status} - ${errorText}`
+                );
+              }
+
+              return resp;
+            },
+            3,
+            1000,
+            workizCircuitBreaker
+          ); // 3 retries, 1s base delay, with circuit breaker
 
           if (updateResponse.ok) {
             const updateData = await updateResponse.json();
@@ -612,6 +784,24 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
     });
   } catch (error) {
     console.log(`❌ Sync error: ${error.message}`);
+
+    // Check if it's a circuit breaker error
+    if (error.message.includes("Circuit breaker is OPEN")) {
+      const workizState = workizCircuitBreaker.getState();
+      console.log(
+        `🚨 Circuit breaker blocked sync: ${workizState.state} state, ${workizState.failureCount} failures`
+      );
+
+      return res.status(503).json({
+        error: "Service temporarily unavailable due to API issues",
+        details: {
+          circuitBreakerState: workizState.state,
+          failureCount: workizState.failureCount,
+          timeUntilRecovery: workizState.timeUntilRecovery,
+          message: "Workiz API is experiencing issues. Please try again later.",
+        },
+      });
+    }
 
     // Record failed sync history if we have account info
     if (req.params.accountId) {
@@ -753,10 +943,17 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
     // Clear the sheet first (skip header row)
     console.log(`🧹 Clearing existing data from sheet (preserving headers)...`);
     try {
-      await sheets.spreadsheets.values.clear({
-        spreadsheetId: account.googleSheetsId,
-        range: "Sheet1!A2:F", // Start from row 2 to preserve headers
-      });
+      await RetryHandler.withRetry(
+        async () => {
+          await sheets.spreadsheets.values.clear({
+            spreadsheetId: account.googleSheetsId,
+            range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+          });
+        },
+        3,
+        1000,
+        sheetsCircuitBreaker
+      );
       console.log(`✅ Sheet cleared successfully (headers preserved)`);
     } catch (error) {
       console.log(`❌ Error clearing sheet: ${error.message}`);
@@ -816,14 +1013,21 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
 
     // Add to Google Sheet (starting from row 2 to preserve headers)
     console.log(`📤 Adding data to Google Sheet (starting from row 2)...`);
-    const response = await sheets.spreadsheets.values.append({
-      spreadsheetId: account.googleSheetsId,
-      range: "Sheet1!A2:F", // Start from row 2 to preserve headers
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values,
+    const response = await RetryHandler.withRetry(
+      async () => {
+        return await sheets.spreadsheets.values.append({
+          spreadsheetId: account.googleSheetsId,
+          range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values,
+          },
+        });
       },
-    });
+      3,
+      1000,
+      sheetsCircuitBreaker
+    );
 
     console.log(`✅ Google Sheets sync completed successfully`);
     console.log(`📈 Updated rows: ${response.data.updates?.updatedRows || 0}`);
@@ -1081,9 +1285,45 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
             console.log(`🔄 Updating job: ${existingJob.UUID}`);
             const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
-            const updateResponse = await RetryHandler.withRetry(async () => {
-              return await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
-            });
+            const updateResponse = await RetryHandler.withRetry(
+              async () => {
+                const resp = await APIManager.fetchWithTimeout(
+                  updateUrl,
+                  {},
+                  30000
+                );
+
+                if (!resp.ok) {
+                  const errorText = await resp.text();
+                  console.log(
+                    `❌ Job update error: ${resp.status} - ${errorText}`
+                  );
+
+                  // Check if response is HTML (520 error page)
+                  if (
+                    errorText.includes('<div class="text-container">') ||
+                    errorText.includes("Oops!") ||
+                    errorText.includes("Something went wrong")
+                  ) {
+                    console.log(
+                      `🚨 Detected HTML error page from Workiz API (likely 520 error)`
+                    );
+                    throw new Error(
+                      `Workiz API 520 error - server is experiencing issues`
+                    );
+                  }
+
+                  throw new Error(
+                    `Job update error: ${resp.status} - ${errorText}`
+                  );
+                }
+
+                return resp;
+              },
+              3,
+              1000,
+              workizCircuitBreaker
+            ); // 3 retries, 1s base delay, with circuit breaker
 
             if (updateResponse.ok) {
               const updateData = await updateResponse.json();
@@ -1292,22 +1532,28 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
         // Enhanced API call with timeout and retry
         const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
 
-        const response = await RetryHandler.withRetry(async () => {
-          const resp = await APIManager.fetchWithTimeout(workizUrl, {}, 45000); // 45 second timeout
-
-          // Handle rate limiting
-          if (await APIManager.handleRateLimit(resp)) {
-            throw new Error("Rate limited - retrying");
-          }
-
-          if (!resp.ok) {
-            throw new Error(
-              `Workiz API error: ${resp.status} - ${resp.statusText}`
+        const response = await RetryHandler.withRetry(
+          async () => {
+            const resp = await APIManager.fetchWithTimeout(
+              workizUrl,
+              {},
+              45000
             );
-          }
 
-          return resp;
-        });
+            if (!resp.ok) {
+              const errorText = await resp.text();
+              console.log(`❌ Workiz API error: ${resp.status} - ${errorText}`);
+              throw new Error(
+                `Workiz API error: ${resp.status} - ${errorText}`
+              );
+            }
+
+            return resp;
+          },
+          5,
+          2000,
+          workizCircuitBreaker
+        ); // 5 retries, 2s base delay, with circuit breaker
 
         const data = await response.json();
         if (!data.flag || !Array.isArray(data.data)) {
@@ -1397,9 +1643,45 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
               console.log(`🔄 Updating job: ${existingJob.UUID}`);
               const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
-              const updateResponse = await RetryHandler.withRetry(async () => {
-                return await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
-              });
+              const updateResponse = await RetryHandler.withRetry(
+                async () => {
+                  const resp = await APIManager.fetchWithTimeout(
+                    updateUrl,
+                    {},
+                    30000
+                  );
+
+                  if (!resp.ok) {
+                    const errorText = await resp.text();
+                    console.log(
+                      `❌ Job update error: ${resp.status} - ${errorText}`
+                    );
+
+                    // Check if response is HTML (520 error page)
+                    if (
+                      errorText.includes('<div class="text-container">') ||
+                      errorText.includes("Oops!") ||
+                      errorText.includes("Something went wrong")
+                    ) {
+                      console.log(
+                        `🚨 Detected HTML error page from Workiz API (likely 520 error)`
+                      );
+                      throw new Error(
+                        `Workiz API 520 error - server is experiencing issues`
+                      );
+                    }
+
+                    throw new Error(
+                      `Job update error: ${resp.status} - ${errorText}`
+                    );
+                  }
+
+                  return resp;
+                },
+                3,
+                1000,
+                workizCircuitBreaker
+              ); // 3 retries, 1s base delay, with circuit breaker
 
               if (updateResponse.ok) {
                 const updateData = await updateResponse.json();
@@ -1738,12 +2020,17 @@ app.get("/api/cron/sync-sheets", async (req, res) => {
         console.log(
           `🧹 Clearing existing data from sheet for ${account.name}...`
         );
-        await RetryHandler.withRetry(async () => {
-          await sheets.spreadsheets.values.clear({
-            spreadsheetId: account.googleSheetsId,
-            range: "Sheet1!A2:F", // Start from row 2 to preserve headers
-          });
-        });
+        await RetryHandler.withRetry(
+          async () => {
+            await sheets.spreadsheets.values.clear({
+              spreadsheetId: account.googleSheetsId,
+              range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+            });
+          },
+          3,
+          1000,
+          sheetsCircuitBreaker
+        );
         console.log(`✅ Sheet cleared successfully for ${account.name}`);
 
         // Prepare data for Google Sheets with new conversion value logic
@@ -1790,16 +2077,21 @@ app.get("/api/cron/sync-sheets", async (req, res) => {
 
         // Add to Google Sheet (starting from row 2 to preserve headers)
         console.log(`📤 Adding data to Google Sheet for ${account.name}...`);
-        const response = await RetryHandler.withRetry(async () => {
-          return await sheets.spreadsheets.values.append({
-            spreadsheetId: account.googleSheetsId,
-            range: "Sheet1!A2:F", // Start from row 2 to preserve headers
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values,
-            },
-          });
-        });
+        const response = await RetryHandler.withRetry(
+          async () => {
+            return await sheets.spreadsheets.values.append({
+              spreadsheetId: account.googleSheetsId,
+              range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+              valueInputOption: "USER_ENTERED",
+              requestBody: {
+                values,
+              },
+            });
+          },
+          3,
+          1000,
+          sheetsCircuitBreaker
+        );
 
         console.log(
           `✅ Google Sheets sync completed successfully for ${account.name}`
@@ -2104,6 +2396,30 @@ app.get("/api/cron/status", async (req, res) => {
     };
 
     res.json(cronStatus);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Circuit breaker status endpoint
+app.get("/api/circuit-breaker/status", (req, res) => {
+  try {
+    const status = {
+      timestamp: new Date().toISOString(),
+      workiz: workizCircuitBreaker.getState(),
+      sheets: sheetsCircuitBreaker.getState(),
+      summary: {
+        workizState: workizCircuitBreaker.getState().state,
+        sheetsState: sheetsCircuitBreaker.getState().state,
+        workizFailures: workizCircuitBreaker.getState().failureCount,
+        sheetsFailures: sheetsCircuitBreaker.getState().failureCount,
+      },
+    };
+
+    res.json(status);
   } catch (error) {
     res.status(500).json({
       error: error.message,
