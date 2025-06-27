@@ -35,11 +35,13 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
       setLoading(true);
       setError('');
       try {
+        console.log('Fetching sync history for accountId:', accountId);
         const response = await fetch(buildApiUrl(`/api/sync-history/${accountId}`));
         if (!response.ok) {
           throw new Error('Failed to fetch sync history');
         }
         const data = await response.json();
+        console.log('Sync history data received:', data);
         setSyncHistory(data);
       } catch (err) {
         console.error('Failed to fetch sync history:', err);
@@ -63,7 +65,14 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
   };
 
   const formatTimestamp = (timestamp: string | Date) => {
+    if (!timestamp) {
+      return 'Unknown time';
+    }
+    try {
     const date = new Date(timestamp);
+      if (isNaN(date.getTime())) {
+        return 'Invalid time';
+      }
     return date.toLocaleString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -72,6 +81,10 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
       minute: '2-digit',
       second: '2-digit',
     });
+    } catch (error) {
+      console.error('Error formatting timestamp:', error);
+      return 'Error formatting time';
+    }
   };
 
   const getStatusIcon = (status: string) => {
@@ -97,6 +110,10 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
     return syncType === 'jobs' ? 'Jobs Sync' : 'Google Sheets Sync';
   };
 
+  const getSyncMethodLabel = (syncMethod: string) => {
+    return syncMethod === 'manual' ? 'Manual' : 'Cron';
+  };
+
   const renderSyncDetails = (sync: SyncHistory) => {
     if (sync.syncType === 'jobs') {
       return (
@@ -110,6 +127,39 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
           <Typography variant="body2" color="text.secondary">
             Final job count: {sync.details.finalJobCount || 0}
           </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Jobs updated: {sync.details.jobsUpdated || 0}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Jobs deleted: {sync.details.jobsDeleted || 0}
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Failed updates: {sync.details.failedUpdates || 0}
+          </Typography>
+          {sync.details.syncMethod && (
+            <Typography variant="body2" color="text.secondary">
+              Sync method: {getSyncMethodLabel(sync.details.syncMethod)}
+            </Typography>
+          )}
+          {sync.details.jobStatusBreakdown && (
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'grey.50', borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight="bold" color="text.primary">
+                Job Status Breakdown:
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Submitted: {sync.details.jobStatusBreakdown.submitted}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Pending: {sync.details.jobStatusBreakdown.pending}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Completed: {sync.details.jobStatusBreakdown.completed}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Cancelled: {sync.details.jobStatusBreakdown.cancelled}
+              </Typography>
+            </Box>
+          )}
         </Box>
       );
     } else if (sync.syncType === 'sheets') {
@@ -124,10 +174,53 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
           <Typography variant="body2" color="text.secondary">
             Updated rows: {sync.details.updatedRows || 0}
           </Typography>
+          {sync.details.syncMethod && (
+            <Typography variant="body2" color="text.secondary">
+              Sync method: {getSyncMethodLabel(sync.details.syncMethod)}
+            </Typography>
+          )}
           {sync.details.sampleJobSources && sync.details.sampleJobSources.length > 0 && (
             <Typography variant="body2" color="text.secondary">
               Sample sources: {sync.details.sampleJobSources.join(', ')}
             </Typography>
+          )}
+          {sync.details.jobStatusBreakdown && (
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'grey.50', borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight="bold" color="text.primary">
+                Job Status Breakdown:
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Submitted: {sync.details.jobStatusBreakdown.submitted}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Pending: {sync.details.jobStatusBreakdown.pending}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Completed: {sync.details.jobStatusBreakdown.completed}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Cancelled: {sync.details.jobStatusBreakdown.cancelled}
+              </Typography>
+            </Box>
+          )}
+          {sync.details.conversionValueLogic && (
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'blue.50', borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight="bold" color="text.primary">
+                Conversion Value Logic:
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Default value: ${sync.details.conversionValueLogic.defaultValue}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs with JobTotalPrice: {sync.details.conversionValueLogic.jobsWithJobTotalPrice}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs with cancelled status: {sync.details.conversionValueLogic.jobsWithCancelledStatus}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Total conversion value: ${sync.details.conversionValueLogic.totalConversionValue}
+              </Typography>
+            </Box>
           )}
         </Box>
       );
@@ -152,6 +245,7 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
   }
 
   if (syncHistory.length === 0) {
+    console.log('No sync history items to display');
     return (
       <Alert severity="info" sx={{ mb: 2 }}>
         No sync history available for this account.
@@ -159,13 +253,22 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
     );
   }
 
+  console.log('Rendering sync history items:', syncHistory.map(s => ({ id: s.id, status: s.status, syncType: s.syncType })));
+
   return (
     <Box sx={{ mt: 2 }}>
       <Typography variant="h6" gutterBottom>
         Sync History
       </Typography>
       <List>
-        {syncHistory.map((sync) => (
+        {syncHistory.map((sync) => {
+          // Safety check for required fields
+          if (!sync.id || !sync.status || !sync.syncType) {
+            console.warn('Invalid sync history item:', sync);
+            return null;
+          }
+          
+          return (
           <ListItem
             key={sync.id}
             sx={{
@@ -183,6 +286,14 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
                 <Typography variant="body2" color="text.primary">
                   {getSyncTypeLabel(sync.syncType)}
                 </Typography>
+                  {sync.details.syncMethod && (
+                    <Chip
+                      label={getSyncMethodLabel(sync.details.syncMethod)}
+                      size="small"
+                      variant="outlined"
+                      color="primary"
+                    />
+                  )}
               </Box>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                 <Typography variant="body2" color="text.secondary">
@@ -208,7 +319,8 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
               </Box>
             </Collapse>
           </ListItem>
-        ))}
+          );
+        })}
       </List>
     </Box>
   );

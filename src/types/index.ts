@@ -95,14 +95,36 @@ export interface SyncHistory {
   status: 'success' | 'error';
   timestamp: Date;
   details: {
+    // Jobs sync details
     jobsFromWorkiz?: number;
     existingJobsFound?: number;
     finalJobCount?: number;
+    jobsUpdated?: number;
+    jobsDeleted?: number;
+    failedUpdates?: number;
+    
+    // Google Sheets sync details
     totalJobs?: number;
     filteredJobs?: number;
     updatedRows?: number;
     sourceFilter?: string[];
     sampleJobSources?: string[];
+    
+    // Enhanced details
+    syncMethod?: 'manual' | 'cron';
+    errorDetails?: string;
+    jobStatusBreakdown?: {
+      submitted: number;
+      pending: number;
+      completed: number;
+      cancelled: number;
+    };
+    conversionValueLogic?: {
+      defaultValue: number;
+      jobsWithJobTotalPrice: number;
+      jobsWithCancelledStatus: number;
+      totalConversionValue: number;
+    };
   };
   errorMessage?: string;
   createdAt?: Date;
