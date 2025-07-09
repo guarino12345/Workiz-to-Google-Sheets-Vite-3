@@ -155,6 +155,23 @@ class BackgroundJobManager {
       }
     }
   }
+
+  static async cleanupOldCheckpoints() {
+    try {
+      const db = await ensureDbConnection();
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+      const result = await db.collection("jobCheckpoints").deleteMany({
+        timestamp: { $lt: oneDayAgo },
+      });
+
+      if (result.deletedCount > 0) {
+        console.log(`🧹 Cleaned up ${result.deletedCount} old checkpoints`);
+      }
+    } catch (error) {
+      console.log(`❌ Failed to clean up old checkpoints: ${error.message}`);
+    }
+  }
 }
 
 // Enhanced error handling with retry logic
@@ -786,8 +803,27 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
     const jobId = BackgroundJobManager.createJob(accountId, totalJobs);
     console.log(`🎯 Created background job: ${jobId}`);
 
+    // Check for existing checkpoint
+    const existingCheckpoint = await loadCheckpoint(jobId);
+    if (existingCheckpoint) {
+      console.log(
+        `🔄 Found existing checkpoint, resuming from ${existingCheckpoint.processedJobs} jobs`
+      );
+      BackgroundJobManager.updateJob(jobId, {
+        processedJobs: existingCheckpoint.processedJobs,
+        updatedJobs: existingCheckpoint.updatedJobs,
+        deletedJobs: existingCheckpoint.deletedJobs,
+        failedUpdates: existingCheckpoint.failedUpdates,
+      });
+    }
+
     // Start background processing using waitUntil for Fluid Compute
-    const backgroundPromise = processBackgroundJob(jobId, account, db);
+    const backgroundPromise = processBackgroundJob(
+      jobId,
+      account,
+      db,
+      existingCheckpoint
+    );
 
     // Use waitUntil to continue processing after response
     if (typeof globalThis.waitUntil === "function") {
@@ -816,8 +852,13 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
   }
 });
 
-// Background job processing function
-async function processBackgroundJob(jobId, account, db) {
+// Background job processing function with auto-recovery
+async function processBackgroundJob(
+  jobId,
+  account,
+  db,
+  existingCheckpoint = null
+) {
   const startTime = Date.now();
 
   try {
@@ -827,38 +868,106 @@ async function processBackgroundJob(jobId, account, db) {
     const oneYearAgo = new Date();
     oneYearAgo.setDate(oneYearAgo.getDate() - 365);
 
-    let updatedJobsCount = 0;
-    let deletedJobsCount = 0;
-    let failedUpdatesCount = 0;
-    let processedJobsCount = 0;
+    // Initialize counters from checkpoint if available
+    let updatedJobsCount = existingCheckpoint?.updatedJobs || 0;
+    let deletedJobsCount = existingCheckpoint?.deletedJobs || 0;
+    let failedUpdatesCount = existingCheckpoint?.failedUpdates || 0;
+    let processedJobsCount = existingCheckpoint?.processedJobs || 0;
+    let lastProcessedJobId = existingCheckpoint?.lastProcessedJobId || null;
+    let batchNumber = existingCheckpoint?.batchNumber || 0;
+    let recoveryAttempts = existingCheckpoint?.recoveryAttempts || 0;
+    const MAX_RECOVERY_ATTEMPTS = 3;
 
-    // Use cursor for memory efficiency
-    const cursor = db
-      .collection("jobs")
-      .find({ accountId: account._id || account.id })
-      .batchSize(50);
+    if (existingCheckpoint) {
+      console.log(
+        `🔄 Resuming from checkpoint: ${processedJobsCount} jobs already processed`
+      );
+    }
 
     // Process jobs in optimized batches
-    const BATCH_SIZE = 50; // Increased batch size for Fluid Compute
-    const CONCURRENT_UPDATES = 10; // Process 10 jobs concurrently
-    const DELAY_BETWEEN_BATCHES = 30000; // Reduced to 30 seconds
+    const BATCH_SIZE = 50;
+    const DELAY_BETWEEN_BATCHES = 30000;
 
-    let batch = [];
+    // Get total job count for progress tracking
+    const totalJobs = await db
+      .collection("jobs")
+      .countDocuments({ accountId: account._id || account.id });
 
-    while (await cursor.hasNext()) {
-      const job = await cursor.next();
-      batch.push(job);
+    console.log(`📊 Total jobs to process: ${totalJobs}`);
 
-      if (batch.length >= BATCH_SIZE) {
-        await processBatch(batch, account, db, oneYearAgo, jobId, {
-          updatedJobsCount,
-          deletedJobsCount,
-          failedUpdatesCount,
-          processedJobsCount,
-        });
+    // Main processing loop with auto-recovery
+    while (
+      processedJobsCount < totalJobs &&
+      recoveryAttempts < MAX_RECOVERY_ATTEMPTS
+    ) {
+      try {
+        // Create cursor with resume point if recovering
+        let cursor;
+        if (lastProcessedJobId) {
+          console.log(`🔄 Auto-recovering from job ID: ${lastProcessedJobId}`);
+          cursor = db
+            .collection("jobs")
+            .find({
+              accountId: account._id || account.id,
+              _id: { $gt: lastProcessedJobId },
+            })
+            .batchSize(50);
+        } else {
+          cursor = db
+            .collection("jobs")
+            .find({ accountId: account._id || account.id })
+            .batchSize(50);
+        }
+
+        let batch = [];
+        batchNumber++;
+
+        console.log(
+          `📦 Starting batch ${batchNumber} (${processedJobsCount}/${totalJobs} jobs processed)`
+        );
+
+        // Process batch
+        while ((await cursor.hasNext()) && batch.length < BATCH_SIZE) {
+          const job = await cursor.next();
+          batch.push(job);
+        }
+
+        if (batch.length === 0) {
+          console.log(`✅ No more jobs to process`);
+          break;
+        }
+
+        // Process the batch
+        await processBatchWithCheckpoints(
+          batch,
+          account,
+          db,
+          oneYearAgo,
+          jobId,
+          {
+            updatedJobsCount,
+            deletedJobsCount,
+            failedUpdatesCount,
+            processedJobsCount,
+            lastProcessedJobId,
+          }
+        );
 
         // Update progress
         processedJobsCount += batch.length;
+        lastProcessedJobId = batch[batch.length - 1]._id;
+
+        // Save checkpoint
+        await saveCheckpoint(jobId, {
+          processedJobs: processedJobsCount,
+          updatedJobs: updatedJobsCount,
+          deletedJobs: deletedJobsCount,
+          failedUpdates: failedUpdatesCount,
+          lastProcessedJobId: lastProcessedJobId,
+          batchNumber: batchNumber,
+          recoveryAttempts: recoveryAttempts,
+        });
+
         BackgroundJobManager.updateJob(jobId, {
           processedJobs: processedJobsCount,
           updatedJobs: updatedJobsCount,
@@ -867,36 +976,46 @@ async function processBackgroundJob(jobId, account, db) {
         });
 
         console.log(
-          `📦 Processed batch: ${processedJobsCount}/${account.totalJobs} jobs`
+          `📦 Completed batch ${batchNumber}: ${processedJobsCount}/${totalJobs} jobs processed`
         );
 
-        // Small delay between batches
-        await new Promise((resolve) =>
-          setTimeout(resolve, DELAY_BETWEEN_BATCHES)
+        // Delay between batches (except for the last batch)
+        if (processedJobsCount < totalJobs) {
+          console.log(
+            `⏳ Waiting ${
+              DELAY_BETWEEN_BATCHES / 1000
+            } seconds before next batch...`
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, DELAY_BETWEEN_BATCHES)
+          );
+        }
+      } catch (cursorError) {
+        recoveryAttempts++;
+        console.log(
+          `❌ Cursor error (attempt ${recoveryAttempts}/${MAX_RECOVERY_ATTEMPTS}): ${cursorError.message}`
         );
-        batch = [];
+
+        if (recoveryAttempts >= MAX_RECOVERY_ATTEMPTS) {
+          throw new Error(
+            `Failed to recover after ${MAX_RECOVERY_ATTEMPTS} attempts: ${cursorError.message}`
+          );
+        }
+
+        // Save checkpoint before attempting recovery
+        await saveCheckpoint(jobId, {
+          processedJobs: processedJobsCount,
+          updatedJobs: updatedJobsCount,
+          deletedJobs: deletedJobsCount,
+          failedUpdates: failedUpdatesCount,
+          lastProcessedJobId: lastProcessedJobId,
+          batchNumber: batchNumber,
+          recoveryAttempts: recoveryAttempts,
+        });
+
+        console.log(`🔄 Attempting auto-recovery in 5 seconds...`);
+        await new Promise((resolve) => setTimeout(resolve, 5000));
       }
-    }
-
-    // Process remaining jobs
-    if (batch.length > 0) {
-      await processBatch(batch, account, db, oneYearAgo, jobId, {
-        updatedJobsCount,
-        deletedJobsCount,
-        failedUpdatesCount,
-        processedJobsCount,
-      });
-
-      processedJobsCount += batch.length;
-      updatedJobsCount += batch.filter(
-        (job) => job.status === "updated"
-      ).length;
-      deletedJobsCount += batch.filter(
-        (job) => job.status === "deleted"
-      ).length;
-      failedUpdatesCount += batch.filter(
-        (job) => job.status === "failed"
-      ).length;
     }
 
     // Record sync history
@@ -938,6 +1057,14 @@ async function processBackgroundJob(jobId, account, db) {
       duration: Date.now() - startTime,
     });
 
+    // Clean up checkpoint on successful completion
+    try {
+      await db.collection("jobCheckpoints").deleteOne({ jobId: jobId });
+      console.log(`🧹 Checkpoint cleaned up for completed job: ${jobId}`);
+    } catch (cleanupError) {
+      console.log(`⚠️ Failed to clean up checkpoint: ${cleanupError.message}`);
+    }
+
     console.log(`✅ Background job completed: ${jobId}`);
     console.log(
       `📊 Final results: Updated ${updatedJobsCount}, Deleted ${deletedJobsCount}, Failed ${failedUpdatesCount}`
@@ -964,8 +1091,57 @@ async function processBackgroundJob(jobId, account, db) {
   }
 }
 
-// Process a batch of jobs sequentially (one by one)
-async function processBatch(batch, account, db, oneYearAgo, jobId, counters) {
+// Checkpoint management functions
+async function saveCheckpoint(jobId, checkpointData) {
+  try {
+    const db = await ensureDbConnection();
+    await db.collection("jobCheckpoints").updateOne(
+      { jobId: jobId },
+      {
+        $set: {
+          ...checkpointData,
+          timestamp: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+    console.log(
+      `💾 Checkpoint saved for job ${jobId}: ${checkpointData.processedJobs} jobs processed`
+    );
+  } catch (error) {
+    console.log(`❌ Failed to save checkpoint: ${error.message}`);
+  }
+}
+
+async function loadCheckpoint(jobId) {
+  try {
+    const db = await ensureDbConnection();
+    const checkpoint = await db
+      .collection("jobCheckpoints")
+      .findOne({ jobId: jobId });
+    if (checkpoint) {
+      console.log(
+        `📂 Loaded checkpoint for job ${jobId}: ${checkpoint.processedJobs} jobs processed`
+      );
+      return checkpoint;
+    }
+    return null;
+  } catch (error) {
+    console.log(`❌ Failed to load checkpoint: ${error.message}`);
+    return null;
+  }
+}
+
+// Process a batch of jobs sequentially with checkpoint support
+async function processBatchWithCheckpoints(
+  batch,
+  account,
+  db,
+  oneYearAgo,
+  jobId,
+  counters
+) {
   console.log(`📦 Processing batch of ${batch.length} jobs sequentially...`);
 
   // Process jobs one by one sequentially
@@ -1095,8 +1271,9 @@ app.get("/api/update-cleanup-status/:jobId", async (req, res) => {
   try {
     const { jobId } = req.params;
 
-    // Clean up old jobs periodically
+    // Clean up old jobs and checkpoints periodically
     BackgroundJobManager.cleanupOldJobs();
+    await BackgroundJobManager.cleanupOldCheckpoints();
 
     const job = BackgroundJobManager.getJob(jobId);
 
@@ -1147,8 +1324,9 @@ app.get("/api/update-cleanup-status/:jobId", async (req, res) => {
 // List all background jobs endpoint
 app.get("/api/update-cleanup-jobs", async (req, res) => {
   try {
-    // Clean up old jobs
+    // Clean up old jobs and checkpoints
     BackgroundJobManager.cleanupOldJobs();
+    await BackgroundJobManager.cleanupOldCheckpoints();
 
     const jobs = Array.from(BackgroundJobManager.jobs.values()).map((job) => ({
       jobId: job.id,
@@ -2441,6 +2619,45 @@ app.get("/api/circuit-breaker/status", (req, res) => {
     };
 
     res.json(status);
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Checkpoint management endpoint
+app.get("/api/checkpoints", async (req, res) => {
+  try {
+    const db = await ensureDbConnection();
+    const checkpoints = await db
+      .collection("jobCheckpoints")
+      .find({})
+      .sort({ timestamp: -1 })
+      .toArray();
+
+    res.json({
+      checkpoints: checkpoints,
+      total: checkpoints.length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      timestamp: new Date().toISOString(),
+    });
+  }
+});
+
+// Manual checkpoint cleanup endpoint
+app.post("/api/checkpoints/cleanup", async (req, res) => {
+  try {
+    await BackgroundJobManager.cleanupOldCheckpoints();
+    res.json({
+      message: "Checkpoint cleanup completed",
+      timestamp: new Date().toISOString(),
+    });
   } catch (error) {
     res.status(500).json({
       error: error.message,
