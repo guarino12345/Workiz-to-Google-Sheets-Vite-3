@@ -54,6 +54,22 @@ interface SyncProgress {
   details?: string;
 }
 
+interface BackgroundJob {
+  jobId: string;
+  status: 'processing' | 'completed' | 'failed';
+  progress: number;
+  totalJobs: number;
+  processedJobs: number;
+  updatedJobs: number;
+  deletedJobs: number;
+  failedUpdates: number;
+  startTime: number;
+  endTime?: number;
+  duration?: number;
+  estimatedTimeRemaining?: number;
+  error?: string;
+}
+
 interface SyncResult {
   success: boolean;
   message: string;
@@ -98,6 +114,10 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [showSyncDetails, setShowSyncDetails] = useState(false);
+  
+  // Background job tracking
+  const [backgroundJob, setBackgroundJob] = useState<BackgroundJob | null>(null);
+  const [jobStatusInterval, setJobStatusInterval] = useState<NodeJS.Timeout | null>(null);
 
   // Set initial selected account only once when component mounts
   useEffect(() => {
@@ -105,6 +125,15 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       setSelectedAccount(accounts[0]);
     }
   }, []);
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (jobStatusInterval) {
+        clearInterval(jobStatusInterval);
+      }
+    };
+  }, [jobStatusInterval]);
 
   // Fetch ALL jobs from DB when component mounts or accounts change
   useEffect(() => {
@@ -373,22 +402,32 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     setError('');
     setSyncResult(null);
     setShowSyncDetails(false);
+    setBackgroundJob(null);
+    
+    // Clear any existing interval
+    if (jobStatusInterval) {
+      clearInterval(jobStatusInterval);
+      setJobStatusInterval(null);
+    }
     
     try {
-      updateSyncProgress('fetching', 10, 'Starting job update and cleanup...');
+      updateSyncProgress('fetching', 10, 'Starting background job update and cleanup...');
       await new Promise<void>(resolve => setTimeout(resolve, 300));
-      
-      updateSyncProgress('batch-processing', 20, 'Processing jobs in batches...');
-      await new Promise<void>(resolve => setTimeout(resolve, 500));
       
       const response = await fetch(
         buildApiUrl(`/api/update-cleanup-jobs/${selectedAccount.id}`),
         { method: 'POST' }
       );
-      const data = await response.json() as { error?: string; details?: any };
+      const data = await response.json() as { 
+        error?: string; 
+        jobId?: string;
+        status?: string;
+        totalJobs?: number;
+        estimatedDuration?: string;
+      };
       
       if (!response.ok) {
-        const errorMessage = data.error || 'Failed to update and cleanup jobs';
+        const errorMessage = data.error || 'Failed to start background job';
         setError(errorMessage);
         setSyncResult({
           success: false,
@@ -398,24 +437,96 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         return;
       }
       
-      updateSyncProgress('complete', 100, 'Update and cleanup completed!');
-      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+      // Background job started successfully
+      console.log('Background job started:', data);
       
-      setSyncResult({
-        success: true,
-        message: `Update and cleanup completed successfully`,
-        details: data.details,
-        timestamp: new Date()
-      });
-      
-      console.log('Update and cleanup successful:', data);
-      setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
-      
-      // Reload jobs
-      const jobsResponse = await fetch(buildApiUrl('/api/jobs'));
-      if (jobsResponse.ok) {
-        const jobsData = await jobsResponse.json();
-        setAllJobs(jobsData);
+      if (data.jobId) {
+        // Initialize background job tracking
+        const initialJob: BackgroundJob = {
+          jobId: data.jobId,
+          status: 'processing',
+          progress: 0,
+          totalJobs: data.totalJobs || 0,
+          processedJobs: 0,
+          updatedJobs: 0,
+          deletedJobs: 0,
+          failedUpdates: 0,
+          startTime: Date.now()
+        };
+        
+        setBackgroundJob(initialJob);
+        
+        // Start polling for job status
+        const interval = setInterval(async () => {
+          try {
+            const statusResponse = await fetch(buildApiUrl(`/api/update-cleanup-status/${data.jobId}`));
+            if (statusResponse.ok) {
+              const statusData = await statusResponse.json();
+              setBackgroundJob(statusData);
+              
+              // Update progress
+              updateSyncProgress(
+                'batch-processing', 
+                statusData.progress, 
+                `Processing jobs: ${statusData.processedJobs}/${statusData.totalJobs} (${statusData.progress}%)`,
+                `Updated: ${statusData.updatedJobs}, Deleted: ${statusData.deletedJobs}, Failed: ${statusData.failedUpdates}`
+              );
+              
+              // Check if job is complete
+              if (statusData.status === 'completed') {
+                clearInterval(interval);
+                setJobStatusInterval(null);
+                
+                updateSyncProgress('complete', 100, 'Background job completed successfully!');
+                await new Promise<void>(resolve => setTimeout(resolve, 1000));
+                
+                setSyncResult({
+                  success: true,
+                  message: `Background job completed successfully`,
+                  details: {
+                    existingJobsFound: statusData.totalJobs,
+                    jobsUpdated: statusData.updatedJobs,
+                    jobsDeleted: statusData.deletedJobs,
+                    failedUpdates: statusData.failedUpdates,
+                    duration: statusData.duration
+                  },
+                  timestamp: new Date()
+                });
+                
+                setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
+                
+                // Reload jobs
+                const jobsResponse = await fetch(buildApiUrl('/api/jobs'));
+                if (jobsResponse.ok) {
+                  const jobsData = await jobsResponse.json();
+                  setAllJobs(jobsData);
+                }
+                
+                setUpdatingAndCleaning(false);
+                setTimeout(() => setSyncProgress(null), 3000);
+                
+              } else if (statusData.status === 'failed') {
+                clearInterval(interval);
+                setJobStatusInterval(null);
+                
+                const errorMessage = statusData.error || 'Background job failed';
+                setError(errorMessage);
+                setSyncResult({
+                  success: false,
+                  message: 'Background job failed',
+                  timestamp: new Date()
+                });
+                
+                setUpdatingAndCleaning(false);
+                setTimeout(() => setSyncProgress(null), 3000);
+              }
+            }
+          } catch (err) {
+            console.error('Error polling job status:', err);
+          }
+        }, 2000); // Poll every 2 seconds
+        
+        setJobStatusInterval(interval);
       }
       
     } catch (err: unknown) {
@@ -428,7 +539,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
         message: 'Update and cleanup failed',
         timestamp: new Date()
       });
-    } finally {
+      
       setUpdatingAndCleaning(false);
       setTimeout(() => setSyncProgress(null), 3000);
     }
@@ -577,6 +688,86 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
             </Card>
           )}
 
+          {/* Background Job Status */}
+          {backgroundJob && (
+            <Card sx={{ 
+              mb: 2, 
+              border: '1px solid', 
+              borderColor: backgroundJob.status === 'processing' ? 'warning.main' : 
+                          backgroundJob.status === 'completed' ? 'success.main' : 'error.main',
+              backgroundColor: backgroundJob.status === 'processing' ? 'warning.50' : 
+                              backgroundJob.status === 'completed' ? 'success.50' : 'error.50'
+            }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  {backgroundJob.status === 'processing' ? <Update /> : 
+                   backgroundJob.status === 'completed' ? <CheckCircle color="success" /> : 
+                   <Error color="error" />}
+                  <Typography variant="h6" sx={{ ml: 1, flexGrow: 1 }}>
+                    Background Job: {backgroundJob.jobId}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {backgroundJob.status.toUpperCase()}
+                  </Typography>
+                </Box>
+                
+                <Box sx={{ mb: 2 }}>
+                  <LinearProgress 
+                    variant="determinate" 
+                    value={backgroundJob.progress} 
+                    color={backgroundJob.status === 'processing' ? 'warning' : 
+                           backgroundJob.status === 'completed' ? 'success' : 'error'}
+                    sx={{ height: 8, borderRadius: 4, mb: 1 }}
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    {backgroundJob.processedJobs} / {backgroundJob.totalJobs} jobs processed ({backgroundJob.progress}%)
+                  </Typography>
+                </Box>
+
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 1 }}>
+                  <Chip 
+                    label={`${backgroundJob.updatedJobs} updated`} 
+                    color="warning" 
+                    size="small" 
+                  />
+                  <Chip 
+                    label={`${backgroundJob.deletedJobs} deleted`} 
+                    color="error" 
+                    size="small" 
+                  />
+                  <Chip 
+                    label={`${backgroundJob.failedUpdates} failed`} 
+                    color="error" 
+                    size="small" 
+                  />
+                  {backgroundJob.estimatedTimeRemaining && (
+                    <Chip 
+                      label={`~${Math.round(backgroundJob.estimatedTimeRemaining / 60)}min remaining`} 
+                      color="info" 
+                      size="small" 
+                    />
+                  )}
+                </Box>
+
+                <Typography variant="body2" color="text.secondary">
+                  Started: {new Date(backgroundJob.startTime).toLocaleString()}
+                  {backgroundJob.endTime && (
+                    <> • Completed: {new Date(backgroundJob.endTime).toLocaleString()}</>
+                  )}
+                  {backgroundJob.duration && (
+                    <> • Duration: {Math.round(backgroundJob.duration / 1000)}s</>
+                  )}
+                </Typography>
+
+                {backgroundJob.error && (
+                  <Alert severity="error" sx={{ mt: 1 }}>
+                    {backgroundJob.error}
+                  </Alert>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* Sync Result */}
           {syncResult && (
             <Card sx={{ 
@@ -718,7 +909,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
             <br /><br />
             <strong>Sync Jobs:</strong> Fast bulk sync from Workiz API
             <br />
-            <strong>Update & Cleanup Jobs:</strong> Detailed batch processing to update existing jobs and remove old ones (&gt;1 year)
+            <strong>Update & Cleanup Jobs:</strong> Fluid Compute optimized background processing to update existing jobs and remove old ones (&gt;1 year). Runs in the background with real-time progress tracking.
           </Alert>
           {error && <Alert severity="error">{error}</Alert>}
           
