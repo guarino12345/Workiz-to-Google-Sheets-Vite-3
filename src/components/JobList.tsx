@@ -81,6 +81,15 @@ interface SyncResult {
     jobsDeleted?: number;
     failedUpdates?: number;
     duration?: number;
+    jobUUID?: string;
+    accountName?: string;
+    modifiedCount?: number;
+    matchedCount?: number;
+    changes?: {
+      statusChanged?: boolean;
+      priceChanged?: boolean;
+      lastUpdateChanged?: boolean;
+    };
   };
   timestamp: Date;
 }
@@ -109,6 +118,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [updatingAndCleaning, setUpdatingAndCleaning] = useState(false);
   const [refreshSyncHistory, setRefreshSyncHistory] = useState(0);
   const [manualTriggering, setManualTriggering] = useState(false);
+  const [testingJobUpdate, setTestingJobUpdate] = useState(false);
   
   // New state for enhanced loading and progress
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
@@ -545,6 +555,61 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     }
   };
 
+  const handleTestJobUpdate = async () => {
+    if (!selectedAccount?.id) {
+      console.error('No account ID available for test');
+      return;
+    }
+    
+    setTestingJobUpdate(true);
+    setError('');
+    setSyncResult(null);
+    setShowSyncDetails(false);
+    
+    try {
+      console.log('Testing job update for TXE5JC');
+      
+      const response = await fetch(buildApiUrl('/api/test-update-job/TXE5JC'), {
+        method: 'POST',
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || `HTTP ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('Test job update result:', data);
+      
+      // Show result
+      setSyncResult({
+        success: true,
+        message: data.message,
+        details: {
+          jobUUID: data.details?.jobUUID,
+          accountName: data.details?.accountName,
+          modifiedCount: data.details?.modifiedCount,
+          matchedCount: data.details?.matchedCount,
+          changes: data.details?.changes,
+        },
+        timestamp: new Date() as Date,
+      });
+      
+    } catch (error) {
+      console.error('Error testing job update:', error);
+      setError(getErrorMessage(error));
+      
+      setSyncResult({
+        success: false,
+        message: `Test failed: ${getErrorMessage(error)}`,
+        details: {},
+        timestamp: new Date() as Date,
+      });
+    } finally {
+      setTestingJobUpdate(false);
+    }
+  };
+
   const getProgressColor = (phase: SyncProgress['phase']) => {
     switch (phase) {
       case 'fetching': return 'primary';
@@ -891,6 +956,15 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
                 {manualTriggering ? 'Triggering...' : 'Manual Sync'}
               </Button>
             )}
+            <Button
+              variant="outlined"
+              color="error"
+              onClick={handleTestJobUpdate}
+              disabled={testingJobUpdate}
+              startIcon={testingJobUpdate ? <Refresh /> : <Update />}
+            >
+              {testingJobUpdate ? 'Testing...' : 'Test Job TXE5JC'}
+            </Button>
           </Box>
           {!selectedAccount.workizApiToken && (
             <Alert severity="warning">
