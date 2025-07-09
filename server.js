@@ -715,6 +715,15 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
       });
     }
 
+    console.log(
+      `🔄 Starting update and cleanup process for ${existingJobs.length} jobs`
+    );
+    console.log(
+      `📅 Jobs older than ${
+        oneYearAgo.toISOString().split("T")[0]
+      } will be deleted`
+    );
+
     // Calculate 1-year cutoff date
     const oneYearAgo = new Date();
     oneYearAgo.setDate(oneYearAgo.getDate() - 365);
@@ -733,7 +742,9 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
       const totalBatches = Math.ceil(existingJobs.length / BATCH_SIZE);
 
       console.log(
-        `📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} jobs)`
+        `📦 Processing batch ${batchNumber}/${totalBatches} (${
+          batch.length
+        } jobs) - Progress: ${Math.round((i / existingJobs.length) * 100)}%`
       );
 
       // Process each job in the current batch
@@ -797,41 +808,34 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
             workizCircuitBreaker
           ); // 3 retries, 1s base delay, with circuit breaker
 
-          if (updateResponse.ok) {
-            const updateData = await updateResponse.json();
+          const updateData = await updateResponse.json();
 
-            if (updateData.flag && updateData.data) {
-              // Update the job with fresh data from Workiz
-              const updatedJob = {
-                ...updateData.data,
-                accountId: account._id || account.id,
-              };
+          if (updateData.flag && updateData.data) {
+            // Update the job with fresh data from Workiz using upsert
+            const updatedJob = {
+              ...updateData.data,
+              accountId: account._id || account.id,
+            };
 
-              await RetryHandler.withRetry(async () => {
-                await db
-                  .collection("jobs")
-                  .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
-              });
+            await RetryHandler.withRetry(async () => {
+              await db
+                .collection("jobs")
+                .updateOne(
+                  { UUID: existingJob.UUID },
+                  { $set: updatedJob },
+                  { upsert: true }
+                );
+            });
 
-              updatedJobsCount++;
-              // console.log(`✅ Updated job: ${existingJob.UUID}`);
-            } else {
-              console.log(
-                `⚠️ Job not found in Workiz API: ${existingJob.UUID}`
-              );
-              // Job might have been deleted in Workiz, so delete from our database
-              await RetryHandler.withRetry(async () => {
-                await db
-                  .collection("jobs")
-                  .deleteOne({ UUID: existingJob.UUID });
-              });
-              deletedJobsCount++;
-            }
+            updatedJobsCount++;
+            console.log(`✅ Updated job: ${existingJob.UUID}`);
           } else {
-            console.log(
-              `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
-            );
-            failedUpdatesCount++;
+            console.log(`⚠️ Job not found in Workiz API: ${existingJob.UUID}`);
+            // Job might have been deleted in Workiz, so delete from our database
+            await RetryHandler.withRetry(async () => {
+              await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+            });
+            deletedJobsCount++;
           }
 
           // Add a small delay between individual job updates (100ms)
@@ -840,9 +844,25 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
           console.log(
             `❌ Error processing job ${existingJob.UUID}: ${error.message}`
           );
+
+          // Check if it's a circuit breaker error
+          if (error.message.includes("Circuit breaker is OPEN")) {
+            console.log(
+              `🚨 Circuit breaker blocked job update for ${existingJob.UUID}`
+            );
+            // Don't increment failedUpdatesCount for circuit breaker errors
+            // as they're temporary and will be retried
+            continue;
+          }
+
           failedUpdatesCount++;
         }
       }
+
+      // Log batch summary
+      console.log(
+        `📊 Batch ${batchNumber} completed: ${updatedJobsCount} updated, ${deletedJobsCount} deleted, ${failedUpdatesCount} failed`
+      );
 
       // Add delay between batches (except for the last batch)
       if (i + BATCH_SIZE < existingJobs.length) {
