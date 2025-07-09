@@ -2457,3 +2457,198 @@ connectToMongoDB().then(() => {
 
 // Export for Vercel serverless functions
 export default app;
+
+// Temporary test endpoint for updating a specific job
+app.post("/api/test-update-job/:jobUUID", async (req, res) => {
+  try {
+    const { jobUUID } = req.params;
+    console.log(`🧪 Test endpoint: Updating job ${jobUUID}`);
+
+    const db = await ensureDbConnection();
+
+    // Find the job in our database
+    const existingJob = await db.collection("jobs").findOne({ UUID: jobUUID });
+
+    if (!existingJob) {
+      console.log(`❌ Job ${jobUUID} not found in database`);
+      return res.status(404).json({
+        error: "Job not found in database",
+        jobUUID: jobUUID,
+      });
+    }
+
+    console.log(`✅ Found job in database: ${jobUUID}`);
+    console.log(
+      `📋 Job details: ${existingJob.FirstName} ${existingJob.LastName} - ${existingJob.JobDateTime}`
+    );
+
+    // Find the account for this job
+    const account = await db.collection("accounts").findOne({
+      $or: [{ _id: existingJob.accountId }, { id: existingJob.accountId }],
+    });
+
+    if (!account) {
+      console.log(`❌ Account not found for job ${jobUUID}`);
+      return res.status(404).json({
+        error: "Account not found for this job",
+        jobUUID: jobUUID,
+        accountId: existingJob.accountId,
+      });
+    }
+
+    console.log(`✅ Found account: ${account.name}`);
+
+    if (!account.workizApiToken) {
+      return res.status(400).json({
+        error: "Missing API token for this account",
+        accountName: account.name,
+      });
+    }
+
+    // Use the exact same update logic as the background job
+    const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${jobUUID}/`;
+    console.log(`🌐 Updating job via API: ${updateUrl}`);
+
+    const updateResponse = await RetryHandler.withRetry(
+      async () => {
+        const resp = await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
+
+        if (!resp.ok) {
+          const errorText = await resp.text();
+
+          // Check if response is HTML (520 error page)
+          if (
+            errorText.includes('<div class="text-container">') ||
+            errorText.includes("Oops!") ||
+            errorText.includes("Something went wrong")
+          ) {
+            throw new Error(
+              `Workiz API 520 error - server is experiencing issues`
+            );
+          }
+
+          throw new Error(`Job update error: ${resp.status} - ${errorText}`);
+        }
+
+        return resp;
+      },
+      3,
+      1000,
+      workizCircuitBreaker
+    );
+
+    if (updateResponse.ok) {
+      const updateData = await updateResponse.json();
+      console.log(
+        `📊 Workiz API response: flag=${
+          updateData.flag
+        }, data exists=${!!updateData.data}`
+      );
+
+      if (updateData.flag && updateData.data) {
+        // Update the job with fresh data from Workiz (same logic as background job)
+        const updatedJob = {
+          ...updateData.data,
+          accountId: account._id || account.id,
+        };
+
+        console.log(
+          `📝 Updating job in database with fresh data from Workiz...`
+        );
+
+        const updateResult = await RetryHandler.withRetry(async () => {
+          return await db
+            .collection("jobs")
+            .updateOne({ UUID: jobUUID }, { $set: updatedJob });
+        });
+
+        console.log(
+          `✅ Job updated successfully: ${updateResult.modifiedCount} documents modified`
+        );
+
+        // Get the updated job to show the changes
+        const finalJob = await db.collection("jobs").findOne({ UUID: jobUUID });
+
+        res.json({
+          message: `Job ${jobUUID} updated successfully`,
+          details: {
+            jobUUID: jobUUID,
+            accountName: account.name,
+            modifiedCount: updateResult.modifiedCount,
+            matchedCount: updateResult.matchedCount,
+            beforeUpdate: {
+              FirstName: existingJob.FirstName,
+              LastName: existingJob.LastName,
+              Status: existingJob.Status,
+              JobDateTime: existingJob.JobDateTime,
+              JobTotalPrice: existingJob.JobTotalPrice,
+              LastStatusUpdate: existingJob.LastStatusUpdate,
+            },
+            afterUpdate: {
+              FirstName: finalJob.FirstName,
+              LastName: finalJob.LastName,
+              Status: finalJob.Status,
+              JobDateTime: finalJob.JobDateTime,
+              JobTotalPrice: finalJob.JobTotalPrice,
+              LastStatusUpdate: finalJob.LastStatusUpdate,
+            },
+            changes: {
+              statusChanged: existingJob.Status !== finalJob.Status,
+              priceChanged:
+                existingJob.JobTotalPrice !== finalJob.JobTotalPrice,
+              lastUpdateChanged:
+                existingJob.LastStatusUpdate !== finalJob.LastStatusUpdate,
+            },
+          },
+        });
+      } else {
+        // Job might have been deleted in Workiz, so delete from our database (same logic as background job)
+        console.log(
+          `⚠️ Job not found in Workiz API, deleting from database: ${jobUUID}`
+        );
+
+        const deleteResult = await RetryHandler.withRetry(async () => {
+          return await db.collection("jobs").deleteOne({ UUID: jobUUID });
+        });
+
+        console.log(
+          `🗑️ Deleted job from database: ${deleteResult.deletedCount} documents deleted`
+        );
+
+        res.json({
+          message: `Job ${jobUUID} deleted from database (not found in Workiz)`,
+          details: {
+            jobUUID: jobUUID,
+            accountName: account.name,
+            deletedCount: deleteResult.deletedCount,
+            reason: "Job not found in Workiz API",
+          },
+        });
+      }
+    } else {
+      console.log(
+        `❌ Failed to update job ${jobUUID}: ${updateResponse.status}`
+      );
+
+      res.status(500).json({
+        error: `Failed to update job ${jobUUID}`,
+        details: {
+          jobUUID: jobUUID,
+          accountName: account.name,
+          status: updateResponse.status,
+          statusText: updateResponse.statusText,
+        },
+      });
+    }
+  } catch (error) {
+    console.log(`❌ Test endpoint error: ${error.message}`);
+
+    res.status(500).json({
+      error: error.message,
+      details: {
+        jobUUID: req.params.jobUUID,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  }
+});
