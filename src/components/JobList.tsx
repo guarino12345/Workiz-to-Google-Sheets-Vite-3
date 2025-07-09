@@ -570,10 +570,17 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     
     try {
       console.log('Testing job update for TXE5JC');
+      console.log('API URL:', buildApiUrl('/api/test-update-job/TXE5JC'));
       
       const response = await fetch(buildApiUrl('/api/test-update-job/TXE5JC'), {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
       });
+      
+      console.log('Response status:', response.status);
+      console.log('Response ok:', response.ok);
       
       if (!response.ok) {
         const errorData = await response.json();

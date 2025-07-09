@@ -2455,9 +2455,6 @@ connectToMongoDB().then(() => {
   });
 });
 
-// Export for Vercel serverless functions
-export default app;
-
 // Temporary test endpoint for updating a specific job
 app.post("/api/test-update-job/:jobUUID", async (req, res) => {
   try {
