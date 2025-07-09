@@ -87,76 +87,6 @@ class CircuitBreaker {
 const workizCircuitBreaker = new CircuitBreaker(5, 300000); // 5 failures, 5 minutes recovery
 const sheetsCircuitBreaker = new CircuitBreaker(3, 180000); // 3 failures, 3 minutes recovery
 
-// Background job processing manager
-class BackgroundJobManager {
-  static jobs = new Map();
-
-  static createJob(accountId, totalJobs) {
-    const jobId = `update-cleanup-${accountId}-${Date.now()}`;
-    const job = {
-      id: jobId,
-      accountId,
-      status: "processing",
-      progress: 0,
-      totalJobs,
-      processedJobs: 0,
-      updatedJobs: 0,
-      deletedJobs: 0,
-      failedUpdates: 0,
-      startTime: Date.now(),
-      endTime: null,
-      error: null,
-      details: {},
-    };
-
-    this.jobs.set(jobId, job);
-    return jobId;
-  }
-
-  static updateJob(jobId, updates) {
-    const job = this.jobs.get(jobId);
-    if (job) {
-      Object.assign(job, updates);
-      if (updates.processedJobs && job.totalJobs) {
-        job.progress = Math.round((job.processedJobs / job.totalJobs) * 100);
-      }
-    }
-  }
-
-  static getJob(jobId) {
-    return this.jobs.get(jobId);
-  }
-
-  static completeJob(jobId, result) {
-    const job = this.jobs.get(jobId);
-    if (job) {
-      job.status = "completed";
-      job.endTime = Date.now();
-      job.duration = job.endTime - job.startTime;
-      Object.assign(job, result);
-    }
-  }
-
-  static failJob(jobId, error) {
-    const job = this.jobs.get(jobId);
-    if (job) {
-      job.status = "failed";
-      job.endTime = Date.now();
-      job.duration = job.endTime - job.startTime;
-      job.error = error.message;
-    }
-  }
-
-  static cleanupOldJobs() {
-    const oneHourAgo = Date.now() - 60 * 60 * 1000;
-    for (const [jobId, job] of this.jobs.entries()) {
-      if (job.endTime && job.endTime < oneHourAgo) {
-        this.jobs.delete(jobId);
-      }
-    }
-  }
-}
-
 // Enhanced error handling with retry logic
 class RetryHandler {
   static async withRetry(
@@ -736,13 +666,15 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
   }
 });
 
-// Fluid Compute optimized job update and cleanup endpoint
+// Job update and cleanup endpoint
 app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
+  const accountStartTime = Date.now();
+
   try {
     const db = await ensureDbConnection();
     const { accountId } = req.params;
     console.log(
-      `🔄 Starting Fluid Compute optimized job update and cleanup for account ID: ${accountId}`
+      `🔄 Starting job update and cleanup for account ID: ${accountId}`
     );
 
     // Find account by ID - try both id and _id fields
@@ -763,14 +695,15 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
         .json({ error: "Missing API token for this account" });
     }
 
-    // Get total job count for this account
-    const totalJobs = await db
+    // Get all existing jobs for this account
+    const existingJobs = await db
       .collection("jobs")
-      .countDocuments({ accountId: account._id || account.id });
+      .find({ accountId: account._id || account.id })
+      .toArray();
 
-    console.log(`📋 Found ${totalJobs} existing jobs in database`);
+    console.log(`📋 Found ${existingJobs.length} existing jobs in database`);
 
-    if (totalJobs === 0) {
+    if (existingJobs.length === 0) {
       return res.json({
         message: `No jobs found for account ${account.name}`,
         details: {
@@ -782,47 +715,6 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
       });
     }
 
-    // Create background job
-    const jobId = BackgroundJobManager.createJob(accountId, totalJobs);
-    console.log(`🎯 Created background job: ${jobId}`);
-
-    // Start background processing using waitUntil for Fluid Compute
-    const backgroundPromise = processBackgroundJob(jobId, account, db);
-
-    // Use waitUntil to continue processing after response
-    if (typeof globalThis.waitUntil === "function") {
-      globalThis.waitUntil(backgroundPromise);
-    } else {
-      // Fallback for environments without waitUntil
-      backgroundPromise.catch((error) => {
-        console.error("Background job failed:", error);
-        BackgroundJobManager.failJob(jobId, error);
-      });
-    }
-
-    // Return immediate response
-    res.json({
-      message: `Background job update and cleanup started for account ${account.name}`,
-      jobId: jobId,
-      status: "processing",
-      totalJobs: totalJobs,
-      progress: 0,
-      statusEndpoint: `/api/update-cleanup-status/${jobId}`,
-      estimatedDuration: `${Math.ceil(totalJobs / 50)} minutes`,
-    });
-  } catch (error) {
-    console.log(`❌ Failed to start background job: ${error.message}`);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Background job processing function
-async function processBackgroundJob(jobId, account, db) {
-  const startTime = Date.now();
-
-  try {
-    console.log(`🚀 Starting background processing for job: ${jobId}`);
-
     // Calculate 1-year cutoff date
     const oneYearAgo = new Date();
     oneYearAgo.setDate(oneYearAgo.getDate() - 365);
@@ -830,74 +722,141 @@ async function processBackgroundJob(jobId, account, db) {
     let updatedJobsCount = 0;
     let deletedJobsCount = 0;
     let failedUpdatesCount = 0;
-    let processedJobsCount = 0;
 
-    // Use cursor for memory efficiency
-    const cursor = db
-      .collection("jobs")
-      .find({ accountId: account._id || account.id })
-      .batchSize(50);
+    // Process jobs in batches to avoid memory issues and rate limiting
+    const BATCH_SIZE = 29;
+    const DELAY_BETWEEN_BATCHES = 60000; // 60 seconds in milliseconds
 
-    // Process jobs in optimized batches
-    const BATCH_SIZE = 50; // Increased batch size for Fluid Compute
-    const CONCURRENT_UPDATES = 10; // Process 10 jobs concurrently
-    const DELAY_BETWEEN_BATCHES = 30000; // Reduced to 30 seconds
+    for (let i = 0; i < existingJobs.length; i += BATCH_SIZE) {
+      const batch = existingJobs.slice(i, i + BATCH_SIZE);
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(existingJobs.length / BATCH_SIZE);
 
-    let batch = [];
+      console.log(
+        `📦 Processing batch ${batchNumber}/${totalBatches} (${batch.length} jobs)`
+      );
 
-    while (await cursor.hasNext()) {
-      const job = await cursor.next();
-      batch.push(job);
+      // Process each job in the current batch
+      for (const existingJob of batch) {
+        try {
+          const jobDate = new Date(existingJob.JobDateTime);
 
-      if (batch.length >= BATCH_SIZE) {
-        await processBatch(batch, account, db, oneYearAgo, jobId, {
-          updatedJobsCount,
-          deletedJobsCount,
-          failedUpdatesCount,
-          processedJobsCount,
-        });
+          // Check if job is older than 1 year
+          if (jobDate < oneYearAgo) {
+            console.log(
+              `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
+            );
+            await RetryHandler.withRetry(async () => {
+              await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+            });
+            deletedJobsCount++;
+            continue;
+          }
 
-        // Update progress
-        processedJobsCount += batch.length;
-        BackgroundJobManager.updateJob(jobId, {
-          processedJobs: processedJobsCount,
-          updatedJobs: updatedJobsCount,
-          deletedJobs: deletedJobsCount,
-          failedUpdates: failedUpdatesCount,
-        });
+          // Update job using Workiz API
+          // console.log(`🔄 Updating job: ${existingJob.UUID}`);
+          const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
-        console.log(
-          `📦 Processed batch: ${processedJobsCount}/${account.totalJobs} jobs`
-        );
+          const updateResponse = await RetryHandler.withRetry(
+            async () => {
+              const resp = await APIManager.fetchWithTimeout(
+                updateUrl,
+                {},
+                30000
+              );
 
-        // Small delay between batches
+              if (!resp.ok) {
+                const errorText = await resp.text();
+                console.log(
+                  `❌ Job update error: ${resp.status} - ${errorText}`
+                );
+
+                // Check if response is HTML (520 error page)
+                if (
+                  errorText.includes('<div class="text-container">') ||
+                  errorText.includes("Oops!") ||
+                  errorText.includes("Something went wrong")
+                ) {
+                  console.log(
+                    `🚨 Detected HTML error page from Workiz API (likely 520 error)`
+                  );
+                  throw new Error(
+                    `Workiz API 520 error - server is experiencing issues`
+                  );
+                }
+
+                throw new Error(
+                  `Job update error: ${resp.status} - ${errorText}`
+                );
+              }
+
+              return resp;
+            },
+            3,
+            1000,
+            workizCircuitBreaker
+          ); // 3 retries, 1s base delay, with circuit breaker
+
+          if (updateResponse.ok) {
+            const updateData = await updateResponse.json();
+
+            if (updateData.flag && updateData.data) {
+              // Update the job with fresh data from Workiz
+              const updatedJob = {
+                ...updateData.data,
+                accountId: account._id || account.id,
+              };
+
+              await RetryHandler.withRetry(async () => {
+                await db
+                  .collection("jobs")
+                  .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
+              });
+
+              updatedJobsCount++;
+              // console.log(`✅ Updated job: ${existingJob.UUID}`);
+            } else {
+              console.log(
+                `⚠️ Job not found in Workiz API: ${existingJob.UUID}`
+              );
+              // Job might have been deleted in Workiz, so delete from our database
+              await RetryHandler.withRetry(async () => {
+                await db
+                  .collection("jobs")
+                  .deleteOne({ UUID: existingJob.UUID });
+              });
+              deletedJobsCount++;
+            }
+          } else {
+            console.log(
+              `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
+            );
+            failedUpdatesCount++;
+          }
+
+          // Add a small delay between individual job updates (100ms)
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        } catch (error) {
+          console.log(
+            `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+          );
+          failedUpdatesCount++;
+        }
+      }
+
+      // Add delay between batches (except for the last batch)
+      if (i + BATCH_SIZE < existingJobs.length) {
+        console.log(`⏳ Waiting 60 seconds before next batch...`);
         await new Promise((resolve) =>
           setTimeout(resolve, DELAY_BETWEEN_BATCHES)
         );
-        batch = [];
       }
     }
 
-    // Process remaining jobs
-    if (batch.length > 0) {
-      await processBatch(batch, account, db, oneYearAgo, jobId, {
-        updatedJobsCount,
-        deletedJobsCount,
-        failedUpdatesCount,
-        processedJobsCount,
-      });
-
-      processedJobsCount += batch.length;
-      updatedJobsCount += batch.filter(
-        (job) => job.status === "updated"
-      ).length;
-      deletedJobsCount += batch.filter(
-        (job) => job.status === "deleted"
-      ).length;
-      failedUpdatesCount += batch.filter(
-        (job) => job.status === "failed"
-      ).length;
-    }
+    console.log(`📊 Job update and cleanup completed:`);
+    console.log(`   - Updated: ${updatedJobsCount} jobs`);
+    console.log(`   - Deleted (old): ${deletedJobsCount} jobs`);
+    console.log(`   - Failed updates: ${failedUpdatesCount} jobs`);
 
     // Record sync history
     const syncHistoryRecord = {
@@ -905,14 +864,13 @@ async function processBackgroundJob(jobId, account, db) {
       syncType: "update-cleanup",
       status: "success",
       timestamp: new Date(),
-      duration: Date.now() - startTime,
+      duration: Date.now() - accountStartTime,
       details: {
-        existingJobsFound: account.totalJobs,
+        existingJobsFound: existingJobs.length,
         jobsUpdated: updatedJobsCount,
         jobsDeleted: deletedJobsCount,
         failedUpdates: failedUpdatesCount,
-        syncMethod: "background",
-        jobId: jobId,
+        syncMethod: "manual",
       },
     };
 
@@ -930,251 +888,58 @@ async function processBackgroundJob(jobId, account, db) {
         );
     });
 
-    // Complete the job
-    BackgroundJobManager.completeJob(jobId, {
-      updatedJobs: updatedJobsCount,
-      deletedJobs: deletedJobsCount,
-      failedUpdates: failedUpdatesCount,
-      duration: Date.now() - startTime,
+    res.json({
+      message: `Job update and cleanup completed for account ${account.name}`,
+      details: {
+        existingJobsFound: existingJobs.length,
+        jobsUpdated: updatedJobsCount,
+        jobsDeleted: deletedJobsCount,
+        failedUpdates: failedUpdatesCount,
+        duration: Date.now() - accountStartTime,
+      },
     });
-
-    console.log(`✅ Background job completed: ${jobId}`);
-    console.log(
-      `📊 Final results: Updated ${updatedJobsCount}, Deleted ${deletedJobsCount}, Failed ${failedUpdatesCount}`
-    );
   } catch (error) {
-    console.log(`❌ Background job failed: ${error.message}`);
-    BackgroundJobManager.failJob(jobId, error);
+    console.log(`❌ Update and cleanup error: ${error.message}`);
 
-    // Record failed sync history
-    try {
-      const syncHistoryRecord = {
-        accountId: account._id || account.id,
-        syncType: "update-cleanup",
-        status: "error",
-        timestamp: new Date(),
-        duration: Date.now() - startTime,
-        errorMessage: error.message,
-        details: { jobId: jobId },
-      };
-      await db.collection("syncHistory").insertOne(syncHistoryRecord);
-    } catch (historyError) {
-      console.log(`❌ Failed to record sync history: ${historyError.message}`);
-    }
-  }
-}
-
-// Process a batch of jobs sequentially (one by one)
-async function processBatch(batch, account, db, oneYearAgo, jobId, counters) {
-  console.log(`📦 Processing batch of ${batch.length} jobs sequentially...`);
-
-  // Process jobs one by one sequentially
-  for (let i = 0; i < batch.length; i++) {
-    const existingJob = batch[i];
-    const jobNumber = i + 1;
-
-    try {
+    // Check if it's a circuit breaker error
+    if (error.message.includes("Circuit breaker is OPEN")) {
+      const workizState = workizCircuitBreaker.getState();
       console.log(
-        `🔄 Processing job ${jobNumber}/${batch.length}: ${existingJob.UUID}`
+        `🚨 Circuit breaker blocked update/cleanup: ${workizState.state} state, ${workizState.failureCount} failures`
       );
 
-      const jobDate = new Date(existingJob.JobDateTime);
-
-      // Check if job is older than 1 year
-      if (jobDate < oneYearAgo) {
-        console.log(
-          `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
-        );
-        await RetryHandler.withRetry(async () => {
-          await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
-        });
-        counters.deletedJobsCount++;
-        console.log(`✅ Deleted old job: ${existingJob.UUID}`);
-        continue;
-      }
-
-      // Update job using Workiz API
-      const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
-      console.log(`🌐 Updating job via API: ${existingJob.UUID}`);
-
-      const updateResponse = await RetryHandler.withRetry(
-        async () => {
-          const resp = await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
-
-          if (!resp.ok) {
-            const errorText = await resp.text();
-
-            // Check if response is HTML (520 error page)
-            if (
-              errorText.includes('<div class="text-container">') ||
-              errorText.includes("Oops!") ||
-              errorText.includes("Something went wrong")
-            ) {
-              throw new Error(
-                `Workiz API 520 error - server is experiencing issues`
-              );
-            }
-
-            throw new Error(`Job update error: ${resp.status} - ${errorText}`);
-          }
-
-          return resp;
+      return res.status(503).json({
+        error: "Service temporarily unavailable due to API issues",
+        details: {
+          circuitBreakerState: workizState.state,
+          failureCount: workizState.failureCount,
+          timeUntilRecovery: workizState.timeUntilRecovery,
+          message: "Workiz API is experiencing issues. Please try again later.",
         },
-        3,
-        1000,
-        workizCircuitBreaker
-      );
-
-      if (updateResponse.ok) {
-        const updateData = await updateResponse.json();
-
-        if (updateData.flag && updateData.data) {
-          // Update the job with fresh data from Workiz
-          const updatedJob = {
-            ...updateData.data,
-            accountId: account._id || account.id,
-          };
-
-          await RetryHandler.withRetry(async () => {
-            await db
-              .collection("jobs")
-              .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
-          });
-
-          counters.updatedJobsCount++;
-          console.log(`✅ Updated job: ${existingJob.UUID}`);
-        } else {
-          // Job might have been deleted in Workiz, so delete from our database
-          console.log(
-            `⚠️ Job not found in Workiz API, deleting from database: ${existingJob.UUID}`
-          );
-          await RetryHandler.withRetry(async () => {
-            await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
-          });
-          counters.deletedJobsCount++;
-          console.log(`🗑️ Deleted job from database: ${existingJob.UUID}`);
-        }
-      } else {
-        console.log(
-          `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
-        );
-        counters.failedUpdatesCount++;
-      }
-
-      // 3-second delay after each individual job to respect Workiz API rate limits
-      if (i < batch.length - 1) {
-        // Don't delay after the last job in the batch
-        console.log(
-          `⏳ Waiting 3 seconds after processing job ${existingJob.UUID} to respect API rate limits...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      }
-    } catch (error) {
-      console.log(
-        `❌ Error processing job ${existingJob.UUID}: ${error.message}`
-      );
-      counters.failedUpdatesCount++;
-
-      // Still add delay even on error to maintain rate limiting
-      if (i < batch.length - 1) {
-        console.log(
-          `⏳ Waiting 3 seconds after error on job ${existingJob.UUID}...`
-        );
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      }
-    }
-  }
-
-  console.log(
-    `📊 Batch completed: Updated ${counters.updatedJobsCount}, Deleted ${counters.deletedJobsCount}, Failed ${counters.failedUpdatesCount} jobs`
-  );
-}
-
-// Background job status endpoint
-app.get("/api/update-cleanup-status/:jobId", async (req, res) => {
-  try {
-    const { jobId } = req.params;
-
-    // Clean up old jobs periodically
-    BackgroundJobManager.cleanupOldJobs();
-
-    const job = BackgroundJobManager.getJob(jobId);
-
-    if (!job) {
-      return res.status(404).json({
-        error: "Job not found",
-        message: "The background job may have completed and been cleaned up",
       });
     }
 
-    const response = {
-      jobId: job.id,
-      status: job.status,
-      progress: job.progress,
-      totalJobs: job.totalJobs,
-      processedJobs: job.processedJobs,
-      updatedJobs: job.updatedJobs,
-      deletedJobs: job.deletedJobs,
-      failedUpdates: job.failedUpdates,
-      startTime: job.startTime,
-      endTime: job.endTime,
-      duration:
-        job.duration ||
-        (job.endTime
-          ? job.endTime - job.startTime
-          : Date.now() - job.startTime),
-      estimatedTimeRemaining: null,
-      error: job.error,
-    };
-
-    // Calculate estimated time remaining for processing jobs
-    if (job.status === "processing" && job.processedJobs > 0) {
-      const elapsedTime = Date.now() - job.startTime;
-      const jobsPerSecond = job.processedJobs / (elapsedTime / 1000);
-      const remainingJobs = job.totalJobs - job.processedJobs;
-      const estimatedSeconds = remainingJobs / jobsPerSecond;
-
-      response.estimatedTimeRemaining = Math.round(estimatedSeconds);
+    // Record failed sync history if we have account info
+    if (req.params.accountId) {
+      try {
+        const syncHistoryRecord = {
+          accountId: req.params.accountId,
+          syncType: "update-cleanup",
+          status: "error",
+          timestamp: new Date(),
+          duration: Date.now() - accountStartTime,
+          errorMessage: error.message,
+          details: {},
+        };
+        await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        console.log(`📝 Failed sync history recorded for update/cleanup`);
+      } catch (historyError) {
+        console.log(
+          `❌ Failed to record sync history: ${historyError.message}`
+        );
+      }
     }
 
-    res.json(response);
-  } catch (error) {
-    console.error("Error getting job status:", error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// List all background jobs endpoint
-app.get("/api/update-cleanup-jobs", async (req, res) => {
-  try {
-    // Clean up old jobs
-    BackgroundJobManager.cleanupOldJobs();
-
-    const jobs = Array.from(BackgroundJobManager.jobs.values()).map((job) => ({
-      jobId: job.id,
-      accountId: job.accountId,
-      status: job.status,
-      progress: job.progress,
-      totalJobs: job.totalJobs,
-      processedJobs: job.processedJobs,
-      startTime: job.startTime,
-      endTime: job.endTime,
-      duration:
-        job.duration ||
-        (job.endTime
-          ? job.endTime - job.startTime
-          : Date.now() - job.startTime),
-    }));
-
-    res.json({
-      jobs: jobs,
-      totalJobs: jobs.length,
-      activeJobs: jobs.filter((j) => j.status === "processing").length,
-      completedJobs: jobs.filter((j) => j.status === "completed").length,
-      failedJobs: jobs.filter((j) => j.status === "failed").length,
-    });
-  } catch (error) {
-    console.error("Error listing background jobs:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -2455,197 +2220,5 @@ connectToMongoDB().then(() => {
   });
 });
 
-// Temporary test endpoint for updating a specific job
-app.post("/api/test-update-job/:jobUUID", async (req, res) => {
-  try {
-    const { jobUUID } = req.params;
-    console.log(`🧪 Test endpoint: Updating job ${jobUUID}`);
-
-    const db = await ensureDbConnection();
-
-    // Find the job in our database
-    const existingJob = await db.collection("jobs").findOne({ UUID: jobUUID });
-
-    if (!existingJob) {
-      console.log(`❌ Job ${jobUUID} not found in database`);
-      return res.status(404).json({
-        error: "Job not found in database",
-        jobUUID: jobUUID,
-      });
-    }
-
-    console.log(`✅ Found job in database: ${jobUUID}`);
-    console.log(
-      `📋 Job details: ${existingJob.FirstName} ${existingJob.LastName} - ${existingJob.JobDateTime}`
-    );
-
-    // Find the account for this job
-    const account = await db.collection("accounts").findOne({
-      $or: [{ _id: existingJob.accountId }, { id: existingJob.accountId }],
-    });
-
-    if (!account) {
-      console.log(`❌ Account not found for job ${jobUUID}`);
-      return res.status(404).json({
-        error: "Account not found for this job",
-        jobUUID: jobUUID,
-        accountId: existingJob.accountId,
-      });
-    }
-
-    console.log(`✅ Found account: ${account.name}`);
-
-    if (!account.workizApiToken) {
-      return res.status(400).json({
-        error: "Missing API token for this account",
-        accountName: account.name,
-      });
-    }
-
-    // Use the exact same update logic as the background job
-    const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${jobUUID}/`;
-    console.log(`🌐 Updating job via API: ${updateUrl}`);
-
-    const updateResponse = await RetryHandler.withRetry(
-      async () => {
-        const resp = await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
-
-        if (!resp.ok) {
-          const errorText = await resp.text();
-
-          // Check if response is HTML (520 error page)
-          if (
-            errorText.includes('<div class="text-container">') ||
-            errorText.includes("Oops!") ||
-            errorText.includes("Something went wrong")
-          ) {
-            throw new Error(
-              `Workiz API 520 error - server is experiencing issues`
-            );
-          }
-
-          throw new Error(`Job update error: ${resp.status} - ${errorText}`);
-        }
-
-        return resp;
-      },
-      3,
-      1000,
-      workizCircuitBreaker
-    );
-
-    if (updateResponse.ok) {
-      const updateData = await updateResponse.json();
-      console.log(
-        `📊 Workiz API response: flag=${
-          updateData.flag
-        }, data exists=${!!updateData.data}`
-      );
-
-      if (updateData.flag && updateData.data) {
-        // Update the job with fresh data from Workiz (same logic as background job)
-        const updatedJob = {
-          ...updateData.data,
-          accountId: account._id || account.id,
-        };
-
-        console.log(
-          `📝 Updating job in database with fresh data from Workiz...`
-        );
-
-        const updateResult = await RetryHandler.withRetry(async () => {
-          return await db
-            .collection("jobs")
-            .updateOne({ UUID: jobUUID }, { $set: updatedJob });
-        });
-
-        console.log(
-          `✅ Job updated successfully: ${updateResult.modifiedCount} documents modified`
-        );
-
-        // Get the updated job to show the changes
-        const finalJob = await db.collection("jobs").findOne({ UUID: jobUUID });
-
-        res.json({
-          message: `Job ${jobUUID} updated successfully`,
-          details: {
-            jobUUID: jobUUID,
-            accountName: account.name,
-            modifiedCount: updateResult.modifiedCount,
-            matchedCount: updateResult.matchedCount,
-            beforeUpdate: {
-              FirstName: existingJob.FirstName,
-              LastName: existingJob.LastName,
-              Status: existingJob.Status,
-              JobDateTime: existingJob.JobDateTime,
-              JobTotalPrice: existingJob.JobTotalPrice,
-              LastStatusUpdate: existingJob.LastStatusUpdate,
-            },
-            afterUpdate: {
-              FirstName: finalJob.FirstName,
-              LastName: finalJob.LastName,
-              Status: finalJob.Status,
-              JobDateTime: finalJob.JobDateTime,
-              JobTotalPrice: finalJob.JobTotalPrice,
-              LastStatusUpdate: finalJob.LastStatusUpdate,
-            },
-            changes: {
-              statusChanged: existingJob.Status !== finalJob.Status,
-              priceChanged:
-                existingJob.JobTotalPrice !== finalJob.JobTotalPrice,
-              lastUpdateChanged:
-                existingJob.LastStatusUpdate !== finalJob.LastStatusUpdate,
-            },
-          },
-        });
-      } else {
-        // Job might have been deleted in Workiz, so delete from our database (same logic as background job)
-        console.log(
-          `⚠️ Job not found in Workiz API, deleting from database: ${jobUUID}`
-        );
-
-        const deleteResult = await RetryHandler.withRetry(async () => {
-          return await db.collection("jobs").deleteOne({ UUID: jobUUID });
-        });
-
-        console.log(
-          `🗑️ Deleted job from database: ${deleteResult.deletedCount} documents deleted`
-        );
-
-        res.json({
-          message: `Job ${jobUUID} deleted from database (not found in Workiz)`,
-          details: {
-            jobUUID: jobUUID,
-            accountName: account.name,
-            deletedCount: deleteResult.deletedCount,
-            reason: "Job not found in Workiz API",
-          },
-        });
-      }
-    } else {
-      console.log(
-        `❌ Failed to update job ${jobUUID}: ${updateResponse.status}`
-      );
-
-      res.status(500).json({
-        error: `Failed to update job ${jobUUID}`,
-        details: {
-          jobUUID: jobUUID,
-          accountName: account.name,
-          status: updateResponse.status,
-          statusText: updateResponse.statusText,
-        },
-      });
-    }
-  } catch (error) {
-    console.log(`❌ Test endpoint error: ${error.message}`);
-
-    res.status(500).json({
-      error: error.message,
-      details: {
-        jobUUID: req.params.jobUUID,
-        timestamp: new Date().toISOString(),
-      },
-    });
-  }
-});
+// Export for Vercel serverless functions
+export default app;
