@@ -566,6 +566,8 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     setSyncResult(null);
     setShowSyncDetails(false);
     
+    const createTimestamp = () => new Date();
+    
     try {
       console.log('Testing job update for TXE5JC');
       
@@ -592,7 +594,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
           matchedCount: data.details?.matchedCount,
           changes: data.details?.changes,
         },
-        timestamp: new Date() as Date,
+        timestamp: createTimestamp(),
       });
       
     } catch (error) {
@@ -602,8 +604,8 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       setSyncResult({
         success: false,
         message: `Test failed: ${getErrorMessage(error)}`,
+        timestamp: createTimestamp(),
         details: {},
-        timestamp: new Date() as Date,
       });
     } finally {
       setTestingJobUpdate(false);
