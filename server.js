@@ -877,6 +877,7 @@ async function processBackgroundJob(
     let batchNumber = existingCheckpoint?.batchNumber || 0;
     let recoveryAttempts = existingCheckpoint?.recoveryAttempts || 0;
     const MAX_RECOVERY_ATTEMPTS = 3;
+    let correctAccountId = null; // Will be set during accountId detection
 
     if (existingCheckpoint) {
       console.log(
@@ -888,12 +889,62 @@ async function processBackgroundJob(
     const BATCH_SIZE = 50;
     const DELAY_BETWEEN_BATCHES = 30000;
 
-    // Get total job count for progress tracking
-    const totalJobs = await db
-      .collection("jobs")
-      .countDocuments({ accountId: account._id || account.id });
+    // Debug: Check account ID format and job storage
+    console.log(`🔍 Debug - Account ID formats:`);
+    console.log(
+      `  - account._id: ${account._id} (type: ${typeof account._id})`
+    );
+    console.log(`  - account.id: ${account.id} (type: ${typeof account.id})`);
 
-    console.log(`📊 Total jobs to process: ${totalJobs}`);
+    // Check how jobs are actually stored
+    const sampleJobs = await db.collection("jobs").find({}).limit(3).toArray();
+    console.log(`🔍 Debug - Sample jobs accountId formats:`);
+    sampleJobs.forEach((job, index) => {
+      console.log(
+        `  - Job ${index + 1}: accountId = ${
+          job.accountId
+        } (type: ${typeof job.accountId})`
+      );
+    });
+
+    // Try different accountId formats to find the correct one
+    const accountIdFormats = [
+      account._id,
+      account.id,
+      account._id?.toString(),
+      account.id?.toString(),
+      new ObjectId(account.id),
+      new ObjectId(account._id),
+    ].filter(Boolean);
+
+    console.log(`🔍 Debug - Testing accountId formats:`, accountIdFormats);
+
+    let totalJobs = 0;
+
+    for (const accountIdFormat of accountIdFormats) {
+      const count = await db
+        .collection("jobs")
+        .countDocuments({ accountId: accountIdFormat });
+      console.log(`🔍 Debug - accountId ${accountIdFormat}: ${count} jobs`);
+      if (count > 0) {
+        totalJobs = count;
+        correctAccountId = accountIdFormat;
+        break;
+      }
+    }
+
+    if (!correctAccountId) {
+      console.log(
+        `❌ No jobs found with any accountId format. Account: ${account.name}`
+      );
+      throw new Error(
+        `No jobs found for account ${account.name} with any accountId format`
+      );
+    }
+
+    console.log(
+      `✅ Found ${totalJobs} jobs with accountId: ${correctAccountId}`
+    );
 
     // Main processing loop with auto-recovery
     while (
@@ -908,14 +959,14 @@ async function processBackgroundJob(
           cursor = db
             .collection("jobs")
             .find({
-              accountId: account._id || account.id,
+              accountId: correctAccountId,
               _id: { $gt: lastProcessedJobId },
             })
             .batchSize(50);
         } else {
           cursor = db
             .collection("jobs")
-            .find({ accountId: account._id || account.id })
+            .find({ accountId: correctAccountId })
             .batchSize(50);
         }
 
@@ -1020,18 +1071,19 @@ async function processBackgroundJob(
 
     // Record sync history
     const syncHistoryRecord = {
-      accountId: account._id || account.id,
+      accountId: correctAccountId,
       syncType: "update-cleanup",
       status: "success",
       timestamp: new Date(),
       duration: Date.now() - startTime,
       details: {
-        existingJobsFound: account.totalJobs,
+        existingJobsFound: totalJobs,
         jobsUpdated: updatedJobsCount,
         jobsDeleted: deletedJobsCount,
         failedUpdates: failedUpdatesCount,
         syncMethod: "background",
         jobId: jobId,
+        correctAccountId: correctAccountId,
       },
     };
 
@@ -1076,13 +1128,16 @@ async function processBackgroundJob(
     // Record failed sync history
     try {
       const syncHistoryRecord = {
-        accountId: account._id || account.id,
+        accountId: correctAccountId || account._id || account.id,
         syncType: "update-cleanup",
         status: "error",
         timestamp: new Date(),
         duration: Date.now() - startTime,
         errorMessage: error.message,
-        details: { jobId: jobId },
+        details: {
+          jobId: jobId,
+          correctAccountId: correctAccountId,
+        },
       };
       await db.collection("syncHistory").insertOne(syncHistoryRecord);
     } catch (historyError) {
