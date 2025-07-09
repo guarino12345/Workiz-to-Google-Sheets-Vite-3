@@ -765,7 +765,6 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
           }
 
           // Update job using Workiz API
-          console.log(`🔄 Fetching latest data for job: ${existingJob.UUID}`);
           const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
           const updateResponse = await RetryHandler.withRetry(
@@ -809,47 +808,30 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
           ); // 3 retries, 1s base delay, with circuit breaker
 
           const updateData = await updateResponse.json();
-          console.log(
-            `📊 API response for ${existingJob.UUID}: flag=${
-              updateData.flag
-            }, hasData=${!!updateData.data}`
-          );
 
-          if (updateData.flag && updateData.data) {
+          if (
+            updateData.flag &&
+            updateData.data &&
+            updateData.data.length > 0
+          ) {
             // Update the job with fresh data from Workiz using upsert
+            const jobData = updateData.data[0]; // Access first (and only) job in array
             const updatedJob = {
-              ...updateData.data,
+              ...jobData,
               accountId: account._id || account.id,
             };
 
-            console.log(
-              `💾 Updating database for job ${existingJob.UUID} with fresh data`
-            );
-
             await RetryHandler.withRetry(async () => {
-              const result = await db
+              await db
                 .collection("jobs")
                 .updateOne(
                   { UUID: existingJob.UUID },
                   { $set: updatedJob },
                   { upsert: true }
                 );
-              console.log(
-                `📝 Database update result for ${existingJob.UUID}: matched=${result.matchedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount}`
-              );
             });
 
             updatedJobsCount++;
-            console.log(`✅ Updated job: ${existingJob.UUID}`);
-
-            // Log some key fields to verify the update
-            console.log(
-              `📋 Job ${existingJob.UUID} - Status: ${
-                updateData.data.Status
-              }, Price: ${
-                updateData.data.JobTotalPrice
-              }, Notes: ${updateData.data.JobNotes?.substring(0, 50)}...`
-            );
           } else {
             console.log(`⚠️ Job not found in Workiz API: ${existingJob.UUID}`);
             // Job might have been deleted in Workiz, so delete from our database
@@ -862,10 +844,6 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
           // Add a small delay between individual job updates (100ms)
           await new Promise((resolve) => setTimeout(resolve, 100));
         } catch (error) {
-          console.log(
-            `❌ Error processing job ${existingJob.UUID}: ${error.message}`
-          );
-
           // Check if it's a circuit breaker error
           if (error.message.includes("Circuit breaker is OPEN")) {
             console.log(
@@ -876,6 +854,9 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
             continue;
           }
 
+          console.log(
+            `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+          );
           failedUpdatesCount++;
         }
       }
