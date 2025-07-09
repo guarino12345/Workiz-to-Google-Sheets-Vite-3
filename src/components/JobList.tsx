@@ -24,7 +24,8 @@ import {
   ExpandLess,
   CloudDownload,
   CloudUpload,
-  Refresh
+  Refresh,
+  Update
 } from '@mui/icons-material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
@@ -47,7 +48,7 @@ interface Job {
 }
 
 interface SyncProgress {
-  phase: 'fetching' | 'processing' | 'updating' | 'cleaning' | 'complete';
+  phase: 'fetching' | 'processing' | 'updating' | 'cleaning' | 'complete' | 'batch-processing';
   percentage: number;
   message: string;
   details?: string;
@@ -63,6 +64,7 @@ interface SyncResult {
     jobsUpdated?: number;
     jobsDeleted?: number;
     failedUpdates?: number;
+    duration?: number;
   };
   timestamp: Date;
 }
@@ -88,6 +90,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [error, setError] = useState<string>('');
   const [syncing, setSyncing] = useState(false);
   const [syncingToSheets, setSyncingToSheets] = useState(false);
+  const [updatingAndCleaning, setUpdatingAndCleaning] = useState(false);
   const [refreshSyncHistory, setRefreshSyncHistory] = useState(0);
   const [manualTriggering, setManualTriggering] = useState(false);
   
@@ -364,12 +367,80 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     }
   };
 
+  const handleUpdateAndCleanup = async () => {
+    if (!selectedAccount?.id) return;
+    setUpdatingAndCleaning(true);
+    setError('');
+    setSyncResult(null);
+    setShowSyncDetails(false);
+    
+    try {
+      updateSyncProgress('fetching', 10, 'Starting job update and cleanup...');
+      await new Promise<void>(resolve => setTimeout(resolve, 300));
+      
+      updateSyncProgress('batch-processing', 20, 'Processing jobs in batches...');
+      await new Promise<void>(resolve => setTimeout(resolve, 500));
+      
+      const response = await fetch(
+        buildApiUrl(`/api/update-cleanup-jobs/${selectedAccount.id}`),
+        { method: 'POST' }
+      );
+      const data = await response.json() as { error?: string; details?: any };
+      
+      if (!response.ok) {
+        const errorMessage = data.error || 'Failed to update and cleanup jobs';
+        setError(errorMessage);
+        setSyncResult({
+          success: false,
+          message: 'Update and cleanup failed',
+          timestamp: new Date()
+        });
+        return;
+      }
+      
+      updateSyncProgress('complete', 100, 'Update and cleanup completed!');
+      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+      
+      setSyncResult({
+        success: true,
+        message: `Update and cleanup completed successfully`,
+        details: data.details,
+        timestamp: new Date()
+      });
+      
+      console.log('Update and cleanup successful:', data);
+      setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
+      
+      // Reload jobs
+      const jobsResponse = await fetch(buildApiUrl('/api/jobs'));
+      if (jobsResponse.ok) {
+        const jobsData = await jobsResponse.json();
+        setAllJobs(jobsData);
+      }
+      
+    } catch (err: unknown) {
+      console.error('Update and cleanup error:', err);
+      const errorMessage = getErrorMessage(err);
+      setError(errorMessage);
+      
+      setSyncResult({
+        success: false,
+        message: 'Update and cleanup failed',
+        timestamp: new Date()
+      });
+    } finally {
+      setUpdatingAndCleaning(false);
+      setTimeout(() => setSyncProgress(null), 3000);
+    }
+  };
+
   const getProgressColor = (phase: SyncProgress['phase']) => {
     switch (phase) {
       case 'fetching': return 'primary';
       case 'processing': return 'info';
       case 'updating': return 'warning';
       case 'cleaning': return 'secondary';
+      case 'batch-processing': return 'warning';
       case 'complete': return 'success';
       default: return 'primary';
     }
@@ -381,6 +452,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       case 'processing': return <Refresh />;
       case 'updating': return <CloudUpload />;
       case 'cleaning': return <Refresh />;
+      case 'batch-processing': return <Update />;
       case 'complete': return <CheckCircle />;
       default: return <CloudDownload />;
     }
@@ -575,6 +647,13 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
                           size="small" 
                         />
                       )}
+                      {syncResult.details.duration !== undefined && (
+                        <Chip 
+                          label={`${Math.round(syncResult.details.duration / 1000)}s duration`} 
+                          color="default" 
+                          size="small" 
+                        />
+                      )}
                     </Box>
                   )}
                 </Collapse>
@@ -600,6 +679,15 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
               startIcon={syncingToSheets ? <Refresh /> : <CloudUpload />}
             >
               {syncingToSheets ? 'Syncing to Sheets...' : 'Sync to Google Sheets'}
+            </Button>
+            <Button
+              variant="contained"
+              color="warning"
+              onClick={handleUpdateAndCleanup}
+              disabled={updatingAndCleaning || !selectedAccount.workizApiToken}
+              startIcon={updatingAndCleaning ? <Refresh /> : <Update />}
+            >
+              {updatingAndCleaning ? 'Updating & Cleaning...' : 'Update & Cleanup Jobs'}
             </Button>
             {selectedAccount.syncEnabled && (
               <Button
@@ -627,6 +715,10 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
             <AlertTitle>Automated Sync</AlertTitle>
             Jobs are automatically synced daily at 9:00 AM UTC via Vercel Cron Jobs. 
             Use the manual sync buttons above for immediate updates.
+            <br /><br />
+            <strong>Sync Jobs:</strong> Fast bulk sync from Workiz API
+            <br />
+            <strong>Update & Cleanup Jobs:</strong> Detailed batch processing to update existing jobs and remove old ones (&gt;1 year)
           </Alert>
           {error && <Alert severity="error">{error}</Alert>}
           
