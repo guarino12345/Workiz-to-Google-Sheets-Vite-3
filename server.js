@@ -765,7 +765,7 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
           }
 
           // Update job using Workiz API
-          // console.log(`🔄 Updating job: ${existingJob.UUID}`);
+          console.log(`🔄 Fetching latest data for job: ${existingJob.UUID}`);
           const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
           const updateResponse = await RetryHandler.withRetry(
@@ -809,6 +809,11 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
           ); // 3 retries, 1s base delay, with circuit breaker
 
           const updateData = await updateResponse.json();
+          console.log(
+            `📊 API response for ${existingJob.UUID}: flag=${
+              updateData.flag
+            }, hasData=${!!updateData.data}`
+          );
 
           if (updateData.flag && updateData.data) {
             // Update the job with fresh data from Workiz using upsert
@@ -817,18 +822,34 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
               accountId: account._id || account.id,
             };
 
+            console.log(
+              `💾 Updating database for job ${existingJob.UUID} with fresh data`
+            );
+
             await RetryHandler.withRetry(async () => {
-              await db
+              const result = await db
                 .collection("jobs")
                 .updateOne(
                   { UUID: existingJob.UUID },
                   { $set: updatedJob },
                   { upsert: true }
                 );
+              console.log(
+                `📝 Database update result for ${existingJob.UUID}: matched=${result.matchedCount}, modified=${result.modifiedCount}, upserted=${result.upsertedCount}`
+              );
             });
 
             updatedJobsCount++;
             console.log(`✅ Updated job: ${existingJob.UUID}`);
+
+            // Log some key fields to verify the update
+            console.log(
+              `📋 Job ${existingJob.UUID} - Status: ${
+                updateData.data.Status
+              }, Price: ${
+                updateData.data.JobTotalPrice
+              }, Notes: ${updateData.data.JobNotes?.substring(0, 50)}...`
+            );
           } else {
             console.log(`⚠️ Job not found in Workiz API: ${existingJob.UUID}`);
             // Job might have been deleted in Workiz, so delete from our database
