@@ -964,115 +964,130 @@ async function processBackgroundJob(jobId, account, db) {
   }
 }
 
-// Process a batch of jobs with optimized concurrency
+// Process a batch of jobs sequentially (one by one)
 async function processBatch(batch, account, db, oneYearAgo, jobId, counters) {
-  const CONCURRENT_UPDATES = 10;
+  console.log(`📦 Processing batch of ${batch.length} jobs sequentially...`);
 
-  // Process jobs in chunks for controlled concurrency
-  for (let i = 0; i < batch.length; i += CONCURRENT_UPDATES) {
-    const chunk = batch.slice(i, i + CONCURRENT_UPDATES);
+  // Process jobs one by one sequentially
+  for (let i = 0; i < batch.length; i++) {
+    const existingJob = batch[i];
+    const jobNumber = i + 1;
 
-    // Process chunk concurrently
-    const promises = chunk.map(async (existingJob) => {
-      try {
-        const jobDate = new Date(existingJob.JobDateTime);
+    try {
+      console.log(
+        `🔄 Processing job ${jobNumber}/${batch.length}: ${existingJob.UUID}`
+      );
 
-        // Check if job is older than 1 year
-        if (jobDate < oneYearAgo) {
-          await RetryHandler.withRetry(async () => {
-            await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
-          });
-          return { status: "deleted", uuid: existingJob.UUID };
-        }
+      const jobDate = new Date(existingJob.JobDateTime);
 
-        // Update job using Workiz API
-        const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
+      // Check if job is older than 1 year
+      if (jobDate < oneYearAgo) {
+        console.log(
+          `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
+        );
+        await RetryHandler.withRetry(async () => {
+          await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+        });
+        counters.deletedJobsCount++;
+        console.log(`✅ Deleted old job: ${existingJob.UUID}`);
+        continue;
+      }
 
-        const updateResponse = await RetryHandler.withRetry(
-          async () => {
-            const resp = await APIManager.fetchWithTimeout(
-              updateUrl,
-              {},
-              30000
-            );
+      // Update job using Workiz API
+      const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
+      console.log(`🌐 Updating job via API: ${existingJob.UUID}`);
 
-            if (!resp.ok) {
-              const errorText = await resp.text();
+      const updateResponse = await RetryHandler.withRetry(
+        async () => {
+          const resp = await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
 
-              // Check if response is HTML (520 error page)
-              if (
-                errorText.includes('<div class="text-container">') ||
-                errorText.includes("Oops!") ||
-                errorText.includes("Something went wrong")
-              ) {
-                throw new Error(
-                  `Workiz API 520 error - server is experiencing issues`
-                );
-              }
+          if (!resp.ok) {
+            const errorText = await resp.text();
 
+            // Check if response is HTML (520 error page)
+            if (
+              errorText.includes('<div class="text-container">') ||
+              errorText.includes("Oops!") ||
+              errorText.includes("Something went wrong")
+            ) {
               throw new Error(
-                `Job update error: ${resp.status} - ${errorText}`
+                `Workiz API 520 error - server is experiencing issues`
               );
             }
 
-            return resp;
-          },
-          3,
-          1000,
-          workizCircuitBreaker
-        );
-
-        if (updateResponse.ok) {
-          const updateData = await updateResponse.json();
-
-          if (updateData.flag && updateData.data) {
-            // Update the job with fresh data from Workiz
-            const updatedJob = {
-              ...updateData.data,
-              accountId: account._id || account.id,
-            };
-
-            await RetryHandler.withRetry(async () => {
-              await db
-                .collection("jobs")
-                .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
-            });
-
-            return { status: "updated", uuid: existingJob.UUID };
-          } else {
-            // Job might have been deleted in Workiz, so delete from our database
-            await RetryHandler.withRetry(async () => {
-              await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
-            });
-            return { status: "deleted", uuid: existingJob.UUID };
+            throw new Error(`Job update error: ${resp.status} - ${errorText}`);
           }
+
+          return resp;
+        },
+        3,
+        1000,
+        workizCircuitBreaker
+      );
+
+      if (updateResponse.ok) {
+        const updateData = await updateResponse.json();
+
+        if (updateData.flag && updateData.data) {
+          // Update the job with fresh data from Workiz
+          const updatedJob = {
+            ...updateData.data,
+            accountId: account._id || account.id,
+          };
+
+          await RetryHandler.withRetry(async () => {
+            await db
+              .collection("jobs")
+              .updateOne({ UUID: existingJob.UUID }, { $set: updatedJob });
+          });
+
+          counters.updatedJobsCount++;
+          console.log(`✅ Updated job: ${existingJob.UUID}`);
         } else {
-          return { status: "failed", uuid: existingJob.UUID };
+          // Job might have been deleted in Workiz, so delete from our database
+          console.log(
+            `⚠️ Job not found in Workiz API, deleting from database: ${existingJob.UUID}`
+          );
+          await RetryHandler.withRetry(async () => {
+            await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+          });
+          counters.deletedJobsCount++;
+          console.log(`🗑️ Deleted job from database: ${existingJob.UUID}`);
         }
-      } catch (error) {
+      } else {
         console.log(
-          `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+          `❌ Failed to update job ${existingJob.UUID}: ${updateResponse.status}`
         );
-        return { status: "failed", uuid: existingJob.UUID };
+        counters.failedUpdatesCount++;
       }
-    });
 
-    // Wait for all promises in the chunk to complete
-    const results = await Promise.all(promises);
+      // 3-second delay after each individual job to respect Workiz API rate limits
+      if (i < batch.length - 1) {
+        // Don't delay after the last job in the batch
+        console.log(
+          `⏳ Waiting 3 seconds after processing job ${existingJob.UUID} to respect API rate limits...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+    } catch (error) {
+      console.log(
+        `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+      );
+      counters.failedUpdatesCount++;
 
-    // Update counters
-    results.forEach((result) => {
-      if (result.status === "updated") counters.updatedJobsCount++;
-      else if (result.status === "deleted") counters.deletedJobsCount++;
-      else if (result.status === "failed") counters.failedUpdatesCount++;
-    });
-
-    // 3-second delay after each chunk to respect Workiz API rate limits
-    console.log(
-      `⏳ Waiting 3 seconds after processing chunk to respect API rate limits...`
-    );
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+      // Still add delay even on error to maintain rate limiting
+      if (i < batch.length - 1) {
+        console.log(
+          `⏳ Waiting 3 seconds after error on job ${existingJob.UUID}...`
+        );
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+    }
   }
+
+  console.log(
+    `📊 Batch completed: Updated ${counters.updatedJobsCount}, Deleted ${counters.deletedJobsCount}, Failed ${counters.failedUpdatesCount} jobs`
+  );
 }
 
 // Background job status endpoint

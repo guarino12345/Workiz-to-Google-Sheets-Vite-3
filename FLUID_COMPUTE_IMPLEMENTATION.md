@@ -57,8 +57,8 @@ Fluid Compute is Vercel's hybrid solution that removes traditional serverless li
 
 1. **Memory Efficient**: Use database cursors instead of loading all jobs
 2. **Optimized Batching**: Process 50 jobs per batch (increased from 29)
-3. **Concurrent Updates**: Process 10 jobs simultaneously within batches
-4. **Rate Limit Compliance**: 3-second delay after each chunk to respect Workiz API limits
+3. **Sequential Processing**: Process jobs one by one to respect API rate limits
+4. **Rate Limit Compliance**: 3-second delay after each individual job to respect Workiz API limits
 5. **Batch Delays**: 30-second delays between batches (reduced from 60s)
 6. **Progress Tracking**: Update job status every batch
 
@@ -105,9 +105,9 @@ Fluid Compute is Vercel's hybrid solution that removes traditional serverless li
 ### After Fluid Compute
 
 - **Extended Duration**: Up to 800 seconds available
-- **Concurrent Processing**: 10 jobs simultaneously
+- **Sequential Processing**: Jobs processed one by one to respect API limits
 - **Memory Efficient**: Database cursors and streaming
-- **Rate Limit Compliant**: 3-second delays after each API call
+- **Rate Limit Compliant**: 3-second delays after each individual API call
 - **Optimized Delays**: 30-second delays between batches
 - **Real-time Progress**: Live updates and estimated completion
 
