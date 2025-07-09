@@ -715,6 +715,10 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
       });
     }
 
+    // Calculate 1-year cutoff date
+    const oneYearAgo = new Date();
+    oneYearAgo.setDate(oneYearAgo.getDate() - 365);
+
     console.log(
       `🔄 Starting update and cleanup process for ${existingJobs.length} jobs`
     );
@@ -723,10 +727,6 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
         oneYearAgo.toISOString().split("T")[0]
       } will be deleted`
     );
-
-    // Calculate 1-year cutoff date
-    const oneYearAgo = new Date();
-    oneYearAgo.setDate(oneYearAgo.getDate() - 365);
 
     let updatedJobsCount = 0;
     let deletedJobsCount = 0;
