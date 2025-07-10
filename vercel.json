@@ -25,12 +25,48 @@
   ],
   "crons": [
     {
-      "path": "/api/cron/sync-jobs",
-      "schedule": "0 1 * * *"
+      "path": "/api/cron/sync-jobs/account1",
+      "schedule": "0 9 * * *"
     },
     {
-      "path": "/api/cron/sync-sheets",
-      "schedule": "0 2 * * *"
+      "path": "/api/cron/sync-jobs/account2",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account3",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account4",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account5",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account6",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account7",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account8",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account9",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/account10",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-jobs/batch",
+      "schedule": "0 9 * * *"
     }
   ],
   "env": {

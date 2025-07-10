@@ -1591,60 +1591,75 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
   }
 });
 
-// Cron job endpoint
-app.get("/api/cron/sync-jobs", async (req, res) => {
-  try {
-    // Enhanced security validation
-    const userAgent = req.get("User-Agent");
-    const clientIP = req.ip || req.connection.remoteAddress;
+// Individual cron job endpoints for accounts 1-10
+for (let i = 1; i <= 10; i++) {
+  app.get(`/api/cron/sync-jobs/account${i}`, async (req, res) => {
+    try {
+      // Enhanced security validation
+      const userAgent = req.get("User-Agent");
+      const clientIP = req.ip || req.connection.remoteAddress;
 
-    if (!userAgent || !userAgent.includes("vercel-cron")) {
-      console.log(`❌ Unauthorized cron access attempt:`, {
-        userAgent,
-        clientIP,
-        timestamp: new Date().toISOString(),
-      });
-      return res.status(403).json({
-        error: "Unauthorized",
-        timestamp: new Date().toISOString(),
-      });
-    }
+      if (!userAgent || !userAgent.includes("vercel-cron")) {
+        console.log(`❌ Unauthorized cron access attempt:`, {
+          userAgent,
+          clientIP,
+          timestamp: new Date().toISOString(),
+        });
+        return res.status(403).json({
+          error: "Unauthorized",
+          timestamp: new Date().toISOString(),
+        });
+      }
 
-    console.log(`🕐 Vercel Cron Job triggered at: ${new Date().toISOString()}`);
-    console.log(`📊 Starting enhanced sync process...`);
-
-    // Ensure database connection with health check
-    const db = await ensureDbConnection();
-    await DatabaseManager.ensureHealthyConnection(db);
-
-    // Get all accounts with enhanced error handling
-    const accounts = await RetryHandler.withRetry(async () => {
-      const result = await db.collection("accounts").find({}).toArray();
-      return result;
-    });
-
-    if (accounts.length === 0) {
-      console.log("📭 No accounts found to sync");
-      return res.json({
-        message: "No accounts found to sync",
-      });
-    }
-
-    console.log(`📋 Found ${accounts.length} accounts to sync`);
-
-    const syncResults = [];
-    const startTime = Date.now();
-
-    // Process accounts with enhanced error handling
-    for (const [index, account] of accounts.entries()) {
-      const accountStartTime = Date.now();
       console.log(
-        `⏰ Processing account ${index + 1}/${accounts.length}: ${account.name}`
+        `🕐 Vercel Cron Job for account${i} triggered at: ${new Date().toISOString()}`
       );
 
+      // Ensure database connection
+      const db = await ensureDbConnection();
+      await DatabaseManager.ensureHealthyConnection(db);
+
+      // Get the specific account by index (1-based)
+      const accounts = await RetryHandler.withRetry(async () => {
+        const result = await db.collection("accounts").find({}).toArray();
+        return result;
+      });
+
+      if (accounts.length === 0) {
+        console.log("📭 No accounts found");
+        return res.json({
+          message: "No accounts found",
+          accountIndex: i,
+        });
+      }
+
+      // Get account at index i-1 (0-based)
+      const accountIndex = i - 1;
+      if (accountIndex >= accounts.length) {
+        console.log(
+          `📭 No account at index ${i} (only ${accounts.length} accounts exist)`
+        );
+        return res.json({
+          message: `No account at index ${i}`,
+          accountIndex: i,
+          totalAccounts: accounts.length,
+        });
+      }
+
+      const account = accounts[accountIndex];
+      console.log(`📋 Processing account ${i}: ${account.name}`);
+
+      // Call the existing sync-jobs endpoint logic for this account
+      const accountStartTime = Date.now();
+
       try {
-        // Enhanced API call with timeout and retry
+        if (!account.workizApiToken) {
+          throw new Error("Missing API token for this account");
+        }
+
+        // Fetch jobs from Workiz API
         const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
+        console.log(`🌐 Fetching from Workiz: ${workizUrl}`);
 
         const response = await RetryHandler.withRetry(
           async () => {
@@ -1657,6 +1672,17 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
             if (!resp.ok) {
               const errorText = await resp.text();
               console.log(`❌ Workiz API error: ${resp.status} - ${errorText}`);
+
+              if (
+                errorText.includes('<div class="text-container">') ||
+                errorText.includes("Oops!") ||
+                errorText.includes("Something went wrong")
+              ) {
+                throw new Error(
+                  `Workiz API 520 error - server is experiencing issues`
+                );
+              }
+
               throw new Error(
                 `Workiz API error: ${resp.status} - ${errorText}`
               );
@@ -1667,12 +1693,20 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
           5,
           2000,
           workizCircuitBreaker
-        ); // 5 retries, 2s base delay, with circuit breaker
+        );
 
         const data = await response.json();
+        console.log(
+          `📊 Workiz API response: flag=${data.flag}, data.length=${
+            data.data?.length || 0
+          }`
+        );
+
         if (!data.flag || !Array.isArray(data.data)) {
-          throw new Error("Invalid response structure from Workiz API");
+          throw new Error("Invalid response from Workiz API");
         }
+
+        console.log(`📋 Processing ${data.data.length} jobs from Workiz`);
 
         // Add accountId to each job
         const allJobs = data.data.map((job) => ({
@@ -1709,7 +1743,6 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
             `🔍 WhatConverts API credentials found, checking phone numbers...`
           );
 
-          // Extract unique phone numbers from filtered jobs
           const phoneNumbers = [
             ...new Set(
               filteredJobs
@@ -1722,7 +1755,6 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
             `📞 Checking ${phoneNumbers.length} unique phone numbers in WhatConverts`
           );
 
-          // Check phones in WhatConverts
           const whatconvertsResults =
             await WhatConvertsAPI.checkMultiplePhonesInLeads(
               account.whatconvertsApiKey,
@@ -1730,64 +1762,334 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
               phoneNumbers
             );
 
-          // Filter jobs to only include those with phones found in WhatConverts AND have gclid
           const beforeWhatconvertsCount = filteredJobs.length;
           let jobsWithGclid = 0;
 
           filteredJobs = filteredJobs.filter((job) => {
             if (!job.Phone || job.Phone.trim() === "") {
-              console.log(
-                `⚠️ Job ${job.UUID} has no phone number, excluding from WhatConverts filter`
-              );
               return false;
             }
 
             const leadData = whatconvertsResults[job.Phone];
             if (!leadData || !leadData.exists) {
-              console.log(
-                `⚠️ Job ${job.UUID} phone ${job.Phone} not found in WhatConverts`
-              );
               return false;
             }
 
             if (!leadData.hasGclid) {
-              console.log(
-                `⚠️ Job ${job.UUID} phone ${job.Phone} found in WhatConverts but no gclid present`
-              );
               return false;
             }
 
-            // Job passes both filters - add WhatConverts data to job
             job.gclid = leadData.gclid;
             job.whatconvertsDateCreated = leadData.dateCreated;
             jobsWithGclid++;
 
-            console.log(
-              `✅ Job ${job.UUID} phone ${job.Phone} passed WhatConverts filter with gclid: ${leadData.gclid}`
-            );
             return true;
           });
 
           console.log(
             `🔍 Filtered jobs by WhatConverts: ${beforeWhatconvertsCount} → ${filteredJobs.length} jobs (${jobsWithGclid} with gclid)`
           );
-        } else if (
-          account.whatconvertsApiKey ||
-          account.whatconvertsApiSecret
-        ) {
-          console.log(
-            `⚠️ WhatConverts API credentials incomplete - both key and secret required`
-          );
-        } else {
-          console.log(
-            `⚠️ No WhatConverts API credentials configured, skipping phone validation`
-          );
         }
 
         if (filteredJobs.length === 0) {
+          console.log(`⚠️ No jobs match the filtering criteria`);
+          return res.json({
+            message: `No jobs match the filtering criteria for account ${account.name}`,
+            accountIndex: i,
+            accountName: account.name,
+            details: {
+              jobsFromWorkiz: allJobs.length,
+              filteredJobs: 0,
+              sourceFilter: account.sourceFilter,
+              whatconvertsEnabled: !!(
+                account.whatconvertsApiKey && account.whatconvertsApiSecret
+              ),
+            },
+          });
+        }
+
+        // Upsert filtered jobs into MongoDB
+        const bulkOps = filteredJobs.map((job) => ({
+          updateOne: {
+            filter: { UUID: job.UUID },
+            update: { $set: job },
+            upsert: true,
+          },
+        }));
+
+        if (bulkOps.length > 0) {
+          const bulkResult = await db.collection("jobs").bulkWrite(bulkOps);
+          console.log(`✅ Bulk write completed:`, {
+            matchedCount: bulkResult.matchedCount,
+            modifiedCount: bulkResult.modifiedCount,
+            upsertedCount: bulkResult.upsertedCount,
+          });
+        }
+
+        // Verify final count
+        const finalJobCount = await db.collection("jobs").countDocuments({
+          accountId: account._id || account.id,
+        });
+
+        // Record sync history
+        const syncHistoryRecord = {
+          accountId: account._id || account.id,
+          syncType: "jobs",
+          status: "success",
+          timestamp: new Date(),
+          duration: Date.now() - accountStartTime,
+          details: {
+            jobsFromWorkiz: allJobs.length,
+            filteredJobs: filteredJobs.length,
+            finalJobCount: finalJobCount,
+            sourceFilter: account.sourceFilter,
+            whatconvertsEnabled: !!(
+              account.whatconvertsApiKey && account.whatconvertsApiSecret
+            ),
+            syncMethod: "cron",
+            cronJobIndex: i,
+          },
+        };
+
+        await RetryHandler.withRetry(async () => {
+          await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        });
+
+        // Update account's lastSyncDate
+        await RetryHandler.withRetry(async () => {
+          await db
+            .collection("accounts")
+            .updateOne(
+              { _id: account._id || new ObjectId(account.id) },
+              { $set: { lastSyncDate: new Date() } }
+            );
+        });
+
+        const duration = Date.now() - accountStartTime;
+        console.log(
+          `✅ Cron job for account${i} (${account.name}) completed in ${duration}ms`
+        );
+
+        res.json({
+          message: `Synced ${filteredJobs.length} jobs for account ${account.name}`,
+          accountIndex: i,
+          accountName: account.name,
+          duration: duration,
+          details: {
+            jobsFromWorkiz: allJobs.length,
+            filteredJobs: filteredJobs.length,
+            finalJobCount: finalJobCount,
+            sourceFilter: account.sourceFilter,
+            whatconvertsEnabled: !!(
+              account.whatconvertsApiKey && account.whatconvertsApiSecret
+            ),
+          },
+        });
+      } catch (error) {
+        console.log(`❌ Cron job for account${i} failed: ${error.message}`);
+
+        // Record failed sync history
+        const syncHistoryRecord = {
+          accountId: account._id || account.id,
+          syncType: "jobs",
+          status: "error",
+          timestamp: new Date(),
+          duration: Date.now() - accountStartTime,
+          errorMessage: error.message,
+          details: {
+            cronJobIndex: i,
+          },
+        };
+
+        try {
+          await db.collection("syncHistory").insertOne(syncHistoryRecord);
+        } catch (historyError) {
           console.log(
-            `⚠️ No jobs match the filtering criteria for ${account.name}`
+            `❌ Failed to record sync history: ${historyError.message}`
           );
+        }
+
+        res.status(500).json({
+          error: error.message,
+          accountIndex: i,
+          accountName: account.name,
+          duration: Date.now() - accountStartTime,
+        });
+      }
+    } catch (error) {
+      console.log(`❌ Cron job for account${i} error: ${error.message}`);
+      res.status(500).json({
+        error: error.message,
+        accountIndex: i,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+}
+
+// Batch cron job for accounts 11+
+app.get("/api/cron/sync-jobs/batch", async (req, res) => {
+  try {
+    // Enhanced security validation
+    const userAgent = req.get("User-Agent");
+    const clientIP = req.ip || req.connection.remoteAddress;
+
+    if (!userAgent || !userAgent.includes("vercel-cron")) {
+      console.log(`❌ Unauthorized cron access attempt:`, {
+        userAgent,
+        clientIP,
+        timestamp: new Date().toISOString(),
+      });
+      return res.status(403).json({
+        error: "Unauthorized",
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    console.log(
+      `🕐 Vercel Cron Job for batch accounts triggered at: ${new Date().toISOString()}`
+    );
+
+    // Ensure database connection
+    const db = await ensureDbConnection();
+    await DatabaseManager.ensureHealthyConnection(db);
+
+    // Get all accounts
+    const accounts = await RetryHandler.withRetry(async () => {
+      const result = await db.collection("accounts").find({}).toArray();
+      return result;
+    });
+
+    if (accounts.length === 0) {
+      console.log("📭 No accounts found");
+      return res.json({
+        message: "No accounts found",
+        batchType: "overflow",
+      });
+    }
+
+    // Process only accounts 11 and beyond (index 10+)
+    const batchAccounts = accounts.slice(10);
+
+    if (batchAccounts.length === 0) {
+      console.log("📭 No overflow accounts found (accounts 11+)");
+      return res.json({
+        message: "No overflow accounts found",
+        batchType: "overflow",
+        totalAccounts: accounts.length,
+        batchAccounts: 0,
+      });
+    }
+
+    console.log(
+      `📋 Processing ${batchAccounts.length} overflow accounts (accounts 11+)`
+    );
+
+    const syncResults = [];
+    const startTime = Date.now();
+
+    // Process batch accounts sequentially to stay under timeout
+    for (const [index, account] of batchAccounts.entries()) {
+      const accountStartTime = Date.now();
+      console.log(
+        `⏰ Processing overflow account ${index + 1}/${batchAccounts.length}: ${
+          account.name
+        }`
+      );
+
+      try {
+        if (!account.workizApiToken) {
+          throw new Error("Missing API token for this account");
+        }
+
+        // Fetch jobs from Workiz API
+        const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
+
+        const response = await RetryHandler.withRetry(
+          async () => {
+            const resp = await APIManager.fetchWithTimeout(
+              workizUrl,
+              {},
+              45000
+            );
+
+            if (!resp.ok) {
+              const errorText = await resp.text();
+              throw new Error(
+                `Workiz API error: ${resp.status} - ${errorText}`
+              );
+            }
+
+            return resp;
+          },
+          5,
+          2000,
+          workizCircuitBreaker
+        );
+
+        const data = await response.json();
+        if (!data.flag || !Array.isArray(data.data)) {
+          throw new Error("Invalid response from Workiz API");
+        }
+
+        // Add accountId to each job
+        const allJobs = data.data.map((job) => ({
+          ...job,
+          accountId: account._id || account.id,
+        }));
+
+        // Filter jobs by sourceFilter if configured
+        let filteredJobs = allJobs;
+        if (
+          account.sourceFilter &&
+          Array.isArray(account.sourceFilter) &&
+          account.sourceFilter.length > 0
+        ) {
+          filteredJobs = allJobs.filter((job) =>
+            account.sourceFilter.includes(job.JobSource)
+          );
+        }
+
+        // Additional filtering by WhatConverts if configured
+        if (
+          account.whatconvertsApiKey &&
+          account.whatconvertsApiSecret &&
+          filteredJobs.length > 0
+        ) {
+          const phoneNumbers = [
+            ...new Set(
+              filteredJobs
+                .map((job) => job.Phone)
+                .filter((phone) => phone && phone.trim() !== "")
+            ),
+          ];
+
+          const whatconvertsResults =
+            await WhatConvertsAPI.checkMultiplePhonesInLeads(
+              account.whatconvertsApiKey,
+              account.whatconvertsApiSecret,
+              phoneNumbers
+            );
+
+          let jobsWithGclid = 0;
+          filteredJobs = filteredJobs.filter((job) => {
+            if (!job.Phone || job.Phone.trim() === "") {
+              return false;
+            }
+
+            const leadData = whatconvertsResults[job.Phone];
+            if (!leadData || !leadData.exists || !leadData.hasGclid) {
+              return false;
+            }
+
+            job.gclid = leadData.gclid;
+            job.whatconvertsDateCreated = leadData.dateCreated;
+            jobsWithGclid++;
+            return true;
+          });
+        }
+
+        if (filteredJobs.length === 0) {
           syncResults.push({
             account: account.name,
             success: true,
@@ -1798,7 +2100,7 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
           continue;
         }
 
-        // Enhanced bulk operations with error handling
+        // Upsert filtered jobs into MongoDB
         const bulkOps = filteredJobs.map((job) => ({
           updateOne: {
             filter: { UUID: job.UUID },
@@ -1808,71 +2110,21 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
         }));
 
         if (bulkOps.length > 0) {
-          const bulkResult = await RetryHandler.withRetry(async () => {
-            return await db.collection("jobs").bulkWrite(bulkOps);
-          });
-
-          console.log(
-            `✅ Jobs sync completed for ${account.name}: ${bulkResult.upsertedCount} new, ${bulkResult.modifiedCount} updated`
-          );
+          await db.collection("jobs").bulkWrite(bulkOps);
         }
 
-        const finalJobCount = await RetryHandler.withRetry(async () => {
-          return await db
-            .collection("jobs")
-            .countDocuments({ accountId: account._id || account.id });
-        });
-
-        const accountDuration = Date.now() - accountStartTime;
-        console.log(
-          `📊 Sync summary for ${account.name} (${accountDuration}ms):`
-        );
-        console.log(`   - Jobs from Workiz: ${allJobs.length}`);
-        console.log(`   - Filtered jobs: ${filteredJobs.length}`);
-        console.log(`   - Final job count: ${finalJobCount} jobs`);
-
-        // Enhanced sync history recording
+        // Record sync history
         const syncHistoryRecord = {
           accountId: account._id || account.id,
           syncType: "jobs",
           status: "success",
           timestamp: new Date(),
-          duration: accountDuration,
+          duration: Date.now() - accountStartTime,
           details: {
             jobsFromWorkiz: allJobs.length,
             filteredJobs: filteredJobs.length,
-            finalJobCount: finalJobCount,
-            sourceFilter: account.sourceFilter,
-            whatconvertsEnabled: !!(
-              account.whatconvertsApiKey && account.whatconvertsApiSecret
-            ),
-            whatconvertsStats:
-              account.whatconvertsApiKey && account.whatconvertsApiSecret
-                ? {
-                    jobsWithGclid: filteredJobs.filter((j) => j.gclid).length,
-                    jobsWithoutGclid:
-                      filteredJobs.length -
-                      filteredJobs.filter((j) => j.gclid).length,
-                    totalJobsWithGclid: jobsWithGclid || 0,
-                  }
-                : null,
             syncMethod: "cron",
-            jobStatusBreakdown: {
-              submitted: filteredJobs.filter((j) => j.Status === "Submitted")
-                .length,
-              pending: filteredJobs.filter((j) => j.Status === "Pending")
-                .length,
-              completed: filteredJobs.filter(
-                (j) =>
-                  j.Status === "Completed" ||
-                  j.Status === "done pending approval"
-              ).length,
-              cancelled: filteredJobs.filter((j) =>
-                ["Cancelled", "Canceled", "cancelled", "CANCELLED"].includes(
-                  j.Status
-                )
-              ).length,
-            },
+            batchType: "overflow",
           },
         };
 
@@ -1893,17 +2145,16 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
         syncResults.push({
           account: account.name,
           success: true,
-          duration: accountDuration,
+          duration: Date.now() - accountStartTime,
           jobsSynced: filteredJobs.length,
         });
       } catch (error) {
         const accountDuration = Date.now() - accountStartTime;
         console.log(
-          `❌ Sync failed for account ${account.name} (${accountDuration}ms):`,
-          error.message
+          `❌ Batch sync failed for account ${account.name}: ${error.message}`
         );
 
-        // Enhanced failed sync history recording
+        // Record failed sync history
         const syncHistoryRecord = {
           accountId: account._id || account.id,
           syncType: "jobs",
@@ -1911,372 +2162,9 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
           timestamp: new Date(),
           duration: accountDuration,
           errorMessage: error.message,
-          errorStack: error.stack,
-          details: {},
-        };
-
-        try {
-          await db.collection("syncHistory").insertOne(syncHistoryRecord);
-        } catch (historyError) {
-          console.error(
-            "❌ Failed to record sync history:",
-            historyError.message
-          );
-        }
-
-        syncResults.push({
-          account: account.name,
-          success: false,
-          duration: accountDuration,
-          error: error.message,
-        });
-      }
-    }
-
-    const totalDuration = Date.now() - startTime;
-    const successfulSyncs = syncResults.filter((r) => r.success).length;
-    const failedSyncs = syncResults.filter((r) => !r.success).length;
-
-    console.log(`🎯 Enhanced cron job completed in ${totalDuration}ms:`);
-    console.log(`   - Successful: ${successfulSyncs} accounts`);
-    console.log(`   - Failed: ${failedSyncs} accounts`);
-
-    res.json({
-      message: `Enhanced cron job completed: ${successfulSyncs} successful, ${failedSyncs} failed`,
-      duration: totalDuration,
-      results: syncResults,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    const duration = Date.now() - startTime;
-    console.log(
-      `❌ Enhanced cron job error after ${duration}ms: ${error.message}`
-    );
-    console.error("Full error:", error);
-
-    res.status(500).json({
-      error: error.message,
-      duration: duration,
-      timestamp: new Date().toISOString(),
-    });
-  }
-});
-
-// Cron job endpoint for Google Sheets sync
-app.get("/api/cron/sync-sheets", async (req, res) => {
-  try {
-    // Enhanced security validation
-    const userAgent = req.get("User-Agent");
-    const clientIP = req.ip || req.connection.remoteAddress;
-
-    if (!userAgent || !userAgent.includes("vercel-cron")) {
-      console.log(`❌ Unauthorized cron access attempt:`, {
-        userAgent,
-        clientIP,
-        timestamp: new Date().toISOString(),
-      });
-      return res.status(403).json({
-        error: "Unauthorized",
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    console.log(
-      `🕐 Vercel Cron Job for Google Sheets sync triggered at: ${new Date().toISOString()}`
-    );
-    console.log(`📊 Starting Google Sheets sync process...`);
-
-    // Ensure database connection with health check
-    const db = await ensureDbConnection();
-    await DatabaseManager.ensureHealthyConnection(db);
-
-    // Get all accounts with Google Sheets ID
-    const accounts = await RetryHandler.withRetry(async () => {
-      const result = await db
-        .collection("accounts")
-        .find({
-          googleSheetsId: { $exists: true, $ne: "" },
-        })
-        .toArray();
-      return result;
-    });
-
-    if (accounts.length === 0) {
-      console.log("📭 No accounts with Google Sheets ID found to sync");
-      return res.json({
-        message: "No accounts with Google Sheets ID found to sync",
-      });
-    }
-
-    console.log(
-      `📋 Found ${accounts.length} accounts with Google Sheets ID to sync`
-    );
-
-    const syncResults = [];
-    const startTime = Date.now();
-
-    // Parse Google Sheets credentials once
-    let credentials;
-    try {
-      const credentialsStr =
-        process.env.VITE_GOOGLE_SHEETS_CREDENTIALS ||
-        process.env.GOOGLE_SHEETS_CREDENTIALS;
-
-      if (!credentialsStr) {
-        throw new Error(
-          "Google Sheets credentials not found in environment variables"
-        );
-      }
-
-      credentials = JSON.parse(credentialsStr);
-      console.log(`✅ Google Sheets credentials parsed successfully`);
-    } catch (error) {
-      console.error("❌ Error parsing Google Sheets credentials:", error);
-      return res.status(500).json({
-        error: "Invalid Google Sheets credentials format",
-        details: error.message,
-      });
-    }
-
-    // Initialize Google Sheets client
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-    });
-
-    const sheets = google.sheets({ version: "v4", auth });
-    console.log(`🔐 Google Sheets client initialized`);
-
-    // Process accounts with enhanced error handling
-    for (const [index, account] of accounts.entries()) {
-      const accountStartTime = Date.now();
-      console.log(
-        `⏰ Processing Google Sheets sync for account ${index + 1}/${
-          accounts.length
-        }: ${account.name}`
-      );
-
-      try {
-        // Get all jobs for this account
-        const allJobs = await RetryHandler.withRetry(async () => {
-          return await db
-            .collection("jobs")
-            .find({ accountId: account._id || account.id })
-            .toArray();
-        });
-
-        console.log(
-          `📊 Found ${allJobs.length} total jobs for account ${account.name}`
-        );
-
-        // Filter jobs by sourceFilter
-        let filteredJobs = allJobs;
-        if (
-          account.sourceFilter &&
-          Array.isArray(account.sourceFilter) &&
-          account.sourceFilter.length > 0
-        ) {
-          filteredJobs = allJobs.filter((job) =>
-            account.sourceFilter.includes(job.JobSource)
-          );
-          console.log(
-            `🔍 Filtered jobs by sourceFilter: ${allJobs.length} → ${filteredJobs.length} jobs`
-          );
-        } else {
-          console.log(
-            `⚠️ No sourceFilter configured, using all ${allJobs.length} jobs`
-          );
-        }
-
-        if (filteredJobs.length === 0) {
-          console.log(
-            `⚠️ No jobs match the sourceFilter criteria for ${account.name}`
-          );
-          syncResults.push({
-            account: account.name,
-            success: true,
-            duration: Date.now() - accountStartTime,
-            jobsSynced: 0,
-            message: "No jobs to sync",
-          });
-          continue;
-        }
-
-        // Clear the sheet first (skip header row)
-        console.log(
-          `🧹 Clearing existing data from sheet for ${account.name}...`
-        );
-        await RetryHandler.withRetry(
-          async () => {
-            await sheets.spreadsheets.values.clear({
-              spreadsheetId: account.googleSheetsId,
-              range: "Sheet1!A2:F", // Start from row 2 to preserve headers
-            });
-          },
-          3,
-          1000,
-          sheetsCircuitBreaker
-        );
-        console.log(`✅ Sheet cleared successfully for ${account.name}`);
-
-        // Prepare data for Google Sheets with new conversion value logic
-        console.log(
-          `📝 Preparing ${filteredJobs.length} jobs for Google Sheets...`
-        );
-        const values = filteredJobs.map((job, index) => {
-          const formattedTime =
-            formatInTimeZone(
-              new Date(job.JobDateTime),
-              "America/Los_Angeles",
-              "yyyy-MM-dd'T'HH:mm:ss"
-            ) + " America/Los_Angeles";
-
-          // New conversion value logic
-          let conversionValue = account.defaultConversionValue || 0;
-
-          // If JobTotalPrice has a value and is not 0, use it
-          if (job.JobTotalPrice && job.JobTotalPrice !== 0) {
-            conversionValue = job.JobTotalPrice;
-          }
-
-          // If Status is cancelled (case-insensitive), set to 0
-          if (
-            job.Status &&
-            ["Cancelled", "Canceled", "cancelled", "CANCELLED"].includes(
-              job.Status
-            )
-          ) {
-            conversionValue = 0;
-          }
-
-          return [
-            job.Phone || "", // Caller's Phone Number
-            formattedTime, // Call Start Time
-            "Google Ads Convert", // Conversion Name
-            "", // Conversion Time (blank)
-            conversionValue, // Conversion Value
-            "USD", // Conversion Currency
-          ];
-        });
-
-        console.log(`📊 Prepared ${values.length} rows for Google Sheets`);
-
-        // Add to Google Sheet (starting from row 2 to preserve headers)
-        console.log(`📤 Adding data to Google Sheet for ${account.name}...`);
-        const response = await RetryHandler.withRetry(
-          async () => {
-            return await sheets.spreadsheets.values.append({
-              spreadsheetId: account.googleSheetsId,
-              range: "Sheet1!A2:F", // Start from row 2 to preserve headers
-              valueInputOption: "USER_ENTERED",
-              requestBody: {
-                values,
-              },
-            });
-          },
-          3,
-          1000,
-          sheetsCircuitBreaker
-        );
-
-        console.log(
-          `✅ Google Sheets sync completed successfully for ${account.name}`
-        );
-        console.log(
-          `📈 Updated rows: ${response.data.updates?.updatedRows || 0}`
-        );
-
-        // Record sync history
-        const syncHistoryRecord = {
-          accountId: account._id || account.id,
-          syncType: "sheets",
-          status: "success",
-          timestamp: new Date(),
-          duration: Date.now() - accountStartTime,
           details: {
-            totalJobs: allJobs.length,
-            filteredJobs: filteredJobs.length,
-            updatedRows: response.data.updates?.updatedRows || 0,
-            sourceFilter: account.sourceFilter,
-            whatconvertsEnabled: !!(
-              account.whatconvertsApiKey && account.whatconvertsApiSecret
-            ),
-            sampleJobSources: [
-              ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
-            ],
-            syncMethod: "cron",
-            jobStatusBreakdown: {
-              submitted: filteredJobs.filter((j) => j.Status === "Submitted")
-                .length,
-              pending: filteredJobs.filter((j) => j.Status === "Pending")
-                .length,
-              completed: filteredJobs.filter(
-                (j) =>
-                  j.Status === "Completed" ||
-                  j.Status === "done pending approval"
-              ).length,
-              cancelled: filteredJobs.filter((j) =>
-                ["Cancelled", "Canceled", "cancelled", "CANCELLED"].includes(
-                  j.Status
-                )
-              ).length,
-            },
-            conversionValueLogic: {
-              defaultValue: account.defaultConversionValue || 0,
-              jobsWithJobTotalPrice: filteredJobs.filter(
-                (j) => j.JobTotalPrice && j.JobTotalPrice !== 0
-              ).length,
-              jobsWithCancelledStatus: filteredJobs.filter((j) =>
-                ["Cancelled", "Canceled", "cancelled", "CANCELLED"].includes(
-                  j.Status
-                )
-              ).length,
-              totalConversionValue: values.reduce(
-                (sum, row) => sum + (row[4] || 0),
-                0
-              ),
-            },
+            batchType: "overflow",
           },
-        };
-
-        await RetryHandler.withRetry(async () => {
-          await db.collection("syncHistory").insertOne(syncHistoryRecord);
-        });
-
-        const accountDuration = Date.now() - accountStartTime;
-        console.log(
-          `📊 Google Sheets sync summary for ${account.name} (${accountDuration}ms):`
-        );
-        console.log(`   - Total jobs: ${allJobs.length}`);
-        console.log(`   - Filtered jobs: ${filteredJobs.length}`);
-        console.log(
-          `   - Updated rows: ${response.data.updates?.updatedRows || 0}`
-        );
-
-        syncResults.push({
-          account: account.name,
-          success: true,
-          duration: accountDuration,
-          jobsSynced: filteredJobs.length,
-          updatedRows: response.data.updates?.updatedRows || 0,
-        });
-      } catch (error) {
-        const accountDuration = Date.now() - accountStartTime;
-        console.log(
-          `❌ Google Sheets sync failed for account ${account.name} (${accountDuration}ms):`,
-          error.message
-        );
-
-        // Enhanced failed sync history recording
-        const syncHistoryRecord = {
-          accountId: account._id || account.id,
-          syncType: "sheets",
-          status: "error",
-          timestamp: new Date(),
-          duration: accountDuration,
-          errorMessage: error.message,
-          errorStack: error.stack,
-          details: {},
         };
 
         try {
@@ -2301,26 +2189,22 @@ app.get("/api/cron/sync-sheets", async (req, res) => {
     const successfulSyncs = syncResults.filter((r) => r.success).length;
     const failedSyncs = syncResults.filter((r) => !r.success).length;
 
-    console.log(`🎯 Google Sheets cron job completed in ${totalDuration}ms:`);
+    console.log(`🎯 Batch cron job completed in ${totalDuration}ms:`);
     console.log(`   - Successful: ${successfulSyncs} accounts`);
     console.log(`   - Failed: ${failedSyncs} accounts`);
 
     res.json({
-      message: `Google Sheets cron job completed: ${successfulSyncs} successful, ${failedSyncs} failed`,
+      message: `Batch cron job completed: ${successfulSyncs} successful, ${failedSyncs} failed`,
+      batchType: "overflow",
       duration: totalDuration,
       results: syncResults,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
-    const duration = Date.now() - startTime;
-    console.log(
-      `❌ Google Sheets cron job error after ${duration}ms: ${error.message}`
-    );
-    console.error("Full error:", error);
-
+    console.log(`❌ Batch cron job error: ${error.message}`);
     res.status(500).json({
       error: error.message,
-      duration: duration,
+      batchType: "overflow",
       timestamp: new Date().toISOString(),
     });
   }
@@ -2420,10 +2304,25 @@ app.get("/api/cron/status", async (req, res) => {
   try {
     const db = await ensureDbConnection();
 
-    // Get last cron job execution
-    const lastCronSync = await db
+    // Get last cron job execution for individual accounts
+    const lastIndividualCronSync = await db
       .collection("syncHistory")
-      .find({ syncType: "jobs" })
+      .find({
+        syncType: "jobs",
+        "details.cronJobIndex": { $exists: true },
+        "details.cronJobIndex": { $lte: 10 },
+      })
+      .sort({ timestamp: -1 })
+      .limit(1)
+      .toArray();
+
+    // Get last batch cron job execution
+    const lastBatchCronSync = await db
+      .collection("syncHistory")
+      .find({
+        syncType: "jobs",
+        "details.batchType": "overflow",
+      })
       .sort({ timestamp: -1 })
       .limit(1)
       .toArray();
@@ -2447,18 +2346,79 @@ app.get("/api/cron/status", async (req, res) => {
       (sync) => sync.status === "error"
     );
 
+    // Get individual account cron job stats
+    const individualCronStats = {};
+    for (let i = 1; i <= 10; i++) {
+      const accountCronSyncs = recentCronSyncs.filter(
+        (sync) => sync.details?.cronJobIndex === i
+      );
+      const successfulAccountSyncs = accountCronSyncs.filter(
+        (sync) => sync.status === "success"
+      );
+
+      individualCronStats[`account${i}`] = {
+        total: accountCronSyncs.length,
+        successful: successfulAccountSyncs.length,
+        failed: accountCronSyncs.length - successfulAccountSyncs.length,
+        successRate:
+          accountCronSyncs.length > 0
+            ? `${(
+                (successfulAccountSyncs.length / accountCronSyncs.length) *
+                100
+              ).toFixed(2)}%`
+            : "0%",
+        lastExecution:
+          accountCronSyncs.length > 0 ? accountCronSyncs[0].timestamp : null,
+      };
+    }
+
+    // Get batch cron job stats
+    const batchCronSyncs = recentCronSyncs.filter(
+      (sync) => sync.details?.batchType === "overflow"
+    );
+    const successfulBatchSyncs = batchCronSyncs.filter(
+      (sync) => sync.status === "success"
+    );
+
     const cronStatus = {
       timestamp: new Date().toISOString(),
-      lastExecution:
-        lastCronSync.length > 0
-          ? {
-              timestamp: lastCronSync[0].timestamp,
-              status: lastCronSync[0].status,
-              duration: lastCronSync[0].duration,
-              details: lastCronSync[0].details,
-            }
-          : null,
-      last7Days: {
+      cronJobType: "hybrid",
+      individualAccounts: {
+        lastExecution:
+          lastIndividualCronSync.length > 0
+            ? {
+                timestamp: lastIndividualCronSync[0].timestamp,
+                status: lastIndividualCronSync[0].status,
+                duration: lastIndividualCronSync[0].duration,
+                accountIndex: lastIndividualCronSync[0].details?.cronJobIndex,
+              }
+            : null,
+        stats: individualCronStats,
+      },
+      batchAccounts: {
+        lastExecution:
+          lastBatchCronSync.length > 0
+            ? {
+                timestamp: lastBatchCronSync[0].timestamp,
+                status: lastBatchCronSync[0].status,
+                duration: lastBatchCronSync[0].duration,
+                batchType: lastBatchCronSync[0].details?.batchType,
+              }
+            : null,
+        stats: {
+          total: batchCronSyncs.length,
+          successful: successfulBatchSyncs.length,
+          failed: batchCronSyncs.length - successfulBatchSyncs.length,
+          successRate:
+            batchCronSyncs.length > 0
+              ? `${(
+                  (successfulBatchSyncs.length / batchCronSyncs.length) *
+                  100
+                ).toFixed(2)}%`
+              : "0%",
+        },
+      },
+      overall: {
         total: recentCronSyncs.length,
         successful: successfulCronSyncs.length,
         failed: failedCronSyncs.length,
@@ -2481,6 +2441,19 @@ app.get("/api/cron/status", async (req, res) => {
         time: "09:00 UTC",
         frequency: "Daily",
         cronExpression: "0 9 * * *",
+        endpoints: [
+          "/api/cron/sync-jobs/account1",
+          "/api/cron/sync-jobs/account2",
+          "/api/cron/sync-jobs/account3",
+          "/api/cron/sync-jobs/account4",
+          "/api/cron/sync-jobs/account5",
+          "/api/cron/sync-jobs/account6",
+          "/api/cron/sync-jobs/account7",
+          "/api/cron/sync-jobs/account8",
+          "/api/cron/sync-jobs/account9",
+          "/api/cron/sync-jobs/account10",
+          "/api/cron/sync-jobs/batch",
+        ],
       },
     };
 
