@@ -2505,8 +2505,19 @@ class WhatConvertsAPI {
       const formattedPhone = this.formatPhoneToE164(phoneNumber);
       console.log(`📞 Formatted phone to E.164: ${formattedPhone}`);
 
+      // Calculate start_date as 2 months before current date
+      const startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 2);
+      const startDateStr = startDate.toISOString().split("T")[0]; // Format as YYYY-MM-DD
+
+      // Build URL with query parameters
+      const url = `https://app.whatconverts.com/api/v1/leads?start_date=${startDateStr}&phone_number=${encodeURIComponent(
+        formattedPhone
+      )}`;
+      console.log(`🌐 WhatConverts API URL: ${url}`);
+
       const response = await APIManager.fetchWithTimeout(
-        `https://app.whatconverts.com/api/v1/leads/`,
+        url,
         {
           headers: {
             Authorization: `Basic ${Buffer.from(
@@ -2529,6 +2540,8 @@ class WhatConvertsAPI {
       }
 
       const data = await response.json();
+      console.log(`📊 WhatConverts API response for ${formattedPhone}:`, data);
+
       // Robustly extract leads array
       let leads = [];
       if (Array.isArray(data)) {
@@ -2541,43 +2554,13 @@ class WhatConvertsAPI {
         console.log("⚠️ WhatConverts raw response (unexpected shape):", data);
       }
 
-      // Filter leads by phone number using E.164 format with + prefix
-      const leadsWithPhone = leads.filter((lead) => {
-        const leadPhone = lead.phone_number || lead.Phone || "";
+      console.log(`📋 Found ${leads.length} leads for phone ${formattedPhone}`);
 
-        // Try exact match with E.164 format (with +)
-        if (leadPhone === formattedPhone) {
-          return true;
-        }
-
-        // Try match without + prefix
-        if (leadPhone === formattedPhone.replace("+", "")) {
-          return true;
-        }
-
-        // Try match with + prefix if lead phone doesn't have it
-        if (
-          formattedPhone.startsWith("+") &&
-          leadPhone === formattedPhone.substring(1)
-        ) {
-          return true;
-        }
-
-        // Try match by removing all non-digits and comparing
-        const leadDigits = leadPhone.replace(/\D/g, "");
-        const formattedDigits = formattedPhone.replace(/\D/g, "");
-        if (leadDigits === formattedDigits) {
-          return true;
-        }
-
-        return false;
-      });
-
-      const phoneExists = leadsWithPhone.length > 0;
+      const phoneExists = leads.length > 0;
 
       if (phoneExists) {
         // Get the first lead (assuming one phone number per lead)
-        const lead = leadsWithPhone[0];
+        const lead = leads[0];
         const gclid = lead.gclid || null;
         const dateCreated = lead.date_created || lead.DateCreated || null;
 
