@@ -559,14 +559,99 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
       );
     }
 
+    // Additional filtering by WhatConverts if API key and secret are configured
+    if (
+      account.whatconvertsApiKey &&
+      account.whatconvertsApiSecret &&
+      filteredJobs.length > 0
+    ) {
+      console.log(
+        `🔍 WhatConverts API credentials found, checking phone numbers...`
+      );
+
+      // Extract unique phone numbers from filtered jobs
+      const phoneNumbers = [
+        ...new Set(
+          filteredJobs
+            .map((job) => job.Phone)
+            .filter((phone) => phone && phone.trim() !== "")
+        ),
+      ];
+
+      console.log(
+        `📞 Checking ${phoneNumbers.length} unique phone numbers in WhatConverts`
+      );
+
+      // Check phones in WhatConverts
+      const whatconvertsResults =
+        await WhatConvertsAPI.checkMultiplePhonesInLeads(
+          account.whatconvertsApiKey,
+          account.whatconvertsApiSecret,
+          phoneNumbers
+        );
+
+      // Filter jobs to only include those with phones found in WhatConverts AND have gclid
+      const beforeWhatconvertsCount = filteredJobs.length;
+      let jobsWithGclid = 0;
+
+      filteredJobs = filteredJobs.filter((job) => {
+        if (!job.Phone || job.Phone.trim() === "") {
+          console.log(
+            `⚠️ Job ${job.UUID} has no phone number, excluding from WhatConverts filter`
+          );
+          return false;
+        }
+
+        const leadData = whatconvertsResults[job.Phone];
+        if (!leadData || !leadData.exists) {
+          console.log(
+            `⚠️ Job ${job.UUID} phone ${job.Phone} not found in WhatConverts`
+          );
+          return false;
+        }
+
+        if (!leadData.hasGclid) {
+          console.log(
+            `⚠️ Job ${job.UUID} phone ${job.Phone} found in WhatConverts but no gclid present`
+          );
+          return false;
+        }
+
+        // Job passes both filters - add WhatConverts data to job
+        job.gclid = leadData.gclid;
+        job.whatconvertsDateCreated = leadData.dateCreated;
+        jobsWithGclid++;
+
+        console.log(
+          `✅ Job ${job.UUID} phone ${job.Phone} passed WhatConverts filter with gclid: ${leadData.gclid}`
+        );
+        return true;
+      });
+
+      console.log(
+        `🔍 Filtered jobs by WhatConverts: ${beforeWhatconvertsCount} → ${filteredJobs.length} jobs (${jobsWithGclid} with gclid)`
+      );
+    } else if (account.whatconvertsApiKey || account.whatconvertsApiSecret) {
+      console.log(
+        `⚠️ WhatConverts API credentials incomplete - both key and secret required`
+      );
+    } else {
+      console.log(
+        `⚠️ No WhatConverts API credentials configured, skipping phone validation`
+      );
+    }
+
     if (filteredJobs.length === 0) {
-      console.log(`⚠️ No jobs match the sourceFilter criteria`);
+      console.log(`⚠️ No jobs match the filtering criteria`);
       return res.json({
-        message: `No jobs match the sourceFilter criteria for account ${account.name}`,
+        message: `No jobs match the filtering criteria for account ${account.name}`,
         details: {
           jobsFromWorkiz: allJobs.length,
           filteredJobs: 0,
           sourceFilter: account.sourceFilter,
+          whatconvertsEnabled: !!(
+            account.whatconvertsApiKey && account.whatconvertsApiSecret
+          ),
         },
       });
     }
@@ -618,6 +703,19 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
         filteredJobs: filteredJobs.length,
         finalJobCount: finalJobCount,
         sourceFilter: account.sourceFilter,
+        whatconvertsEnabled: !!(
+          account.whatconvertsApiKey && account.whatconvertsApiSecret
+        ),
+        whatconvertsStats:
+          account.whatconvertsApiKey && account.whatconvertsApiSecret
+            ? {
+                jobsWithGclid: filteredJobs.filter((j) => j.gclid).length,
+                jobsWithoutGclid:
+                  filteredJobs.length -
+                  filteredJobs.filter((j) => j.gclid).length,
+                totalJobsWithGclid: jobsWithGclid || 0,
+              }
+            : null,
         syncMethod: "manual",
         jobStatusBreakdown: {
           submitted: filteredJobs.filter((j) => j.Status === "Submitted")
@@ -659,6 +757,9 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
         filteredJobs: filteredJobs.length,
         finalJobCount: finalJobCount,
         sourceFilter: account.sourceFilter,
+        whatconvertsEnabled: !!(
+          account.whatconvertsApiKey && account.whatconvertsApiSecret
+        ),
       },
     });
   } catch (error) {
@@ -1598,9 +1699,94 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
           );
         }
 
+        // Additional filtering by WhatConverts if API key and secret are configured
+        if (
+          account.whatconvertsApiKey &&
+          account.whatconvertsApiSecret &&
+          filteredJobs.length > 0
+        ) {
+          console.log(
+            `🔍 WhatConverts API credentials found, checking phone numbers...`
+          );
+
+          // Extract unique phone numbers from filtered jobs
+          const phoneNumbers = [
+            ...new Set(
+              filteredJobs
+                .map((job) => job.Phone)
+                .filter((phone) => phone && phone.trim() !== "")
+            ),
+          ];
+
+          console.log(
+            `📞 Checking ${phoneNumbers.length} unique phone numbers in WhatConverts`
+          );
+
+          // Check phones in WhatConverts
+          const whatconvertsResults =
+            await WhatConvertsAPI.checkMultiplePhonesInLeads(
+              account.whatconvertsApiKey,
+              account.whatconvertsApiSecret,
+              phoneNumbers
+            );
+
+          // Filter jobs to only include those with phones found in WhatConverts AND have gclid
+          const beforeWhatconvertsCount = filteredJobs.length;
+          let jobsWithGclid = 0;
+
+          filteredJobs = filteredJobs.filter((job) => {
+            if (!job.Phone || job.Phone.trim() === "") {
+              console.log(
+                `⚠️ Job ${job.UUID} has no phone number, excluding from WhatConverts filter`
+              );
+              return false;
+            }
+
+            const leadData = whatconvertsResults[job.Phone];
+            if (!leadData || !leadData.exists) {
+              console.log(
+                `⚠️ Job ${job.UUID} phone ${job.Phone} not found in WhatConverts`
+              );
+              return false;
+            }
+
+            if (!leadData.hasGclid) {
+              console.log(
+                `⚠️ Job ${job.UUID} phone ${job.Phone} found in WhatConverts but no gclid present`
+              );
+              return false;
+            }
+
+            // Job passes both filters - add WhatConverts data to job
+            job.gclid = leadData.gclid;
+            job.whatconvertsDateCreated = leadData.dateCreated;
+            jobsWithGclid++;
+
+            console.log(
+              `✅ Job ${job.UUID} phone ${job.Phone} passed WhatConverts filter with gclid: ${leadData.gclid}`
+            );
+            return true;
+          });
+
+          console.log(
+            `🔍 Filtered jobs by WhatConverts: ${beforeWhatconvertsCount} → ${filteredJobs.length} jobs (${jobsWithGclid} with gclid)`
+          );
+        } else if (
+          account.whatconvertsApiKey ||
+          account.whatconvertsApiSecret
+        ) {
+          console.log(
+            `⚠️ WhatConverts API credentials incomplete - both key and secret required`
+          );
+        } else {
+          console.log(
+            `⚠️ No WhatConverts API credentials configured, skipping phone validation`
+          );
+        }
+
         if (filteredJobs.length === 0) {
           console.log(
-            `⚠️ No jobs match the sourceFilter criteria for ${account.name}`
+            `⚠️ No jobs match the filtering criteria for ${account.name}`
           );
           syncResults.push({
             account: account.name,
@@ -1657,6 +1843,19 @@ app.get("/api/cron/sync-jobs", async (req, res) => {
             filteredJobs: filteredJobs.length,
             finalJobCount: finalJobCount,
             sourceFilter: account.sourceFilter,
+            whatconvertsEnabled: !!(
+              account.whatconvertsApiKey && account.whatconvertsApiSecret
+            ),
+            whatconvertsStats:
+              account.whatconvertsApiKey && account.whatconvertsApiSecret
+                ? {
+                    jobsWithGclid: filteredJobs.filter((j) => j.gclid).length,
+                    jobsWithoutGclid:
+                      filteredJobs.length -
+                      filteredJobs.filter((j) => j.gclid).length,
+                    totalJobsWithGclid: jobsWithGclid || 0,
+                  }
+                : null,
             syncMethod: "cron",
             jobStatusBreakdown: {
               submitted: filteredJobs.filter((j) => j.Status === "Submitted")
@@ -1999,6 +2198,9 @@ app.get("/api/cron/sync-sheets", async (req, res) => {
             filteredJobs: filteredJobs.length,
             updatedRows: response.data.updates?.updatedRows || 0,
             sourceFilter: account.sourceFilter,
+            whatconvertsEnabled: !!(
+              account.whatconvertsApiKey && account.whatconvertsApiSecret
+            ),
             sampleJobSources: [
               ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
             ],
@@ -2314,6 +2516,232 @@ app.get("/api/circuit-breaker/status", (req, res) => {
     });
   }
 });
+
+// WhatConverts API service for phone number validation
+class WhatConvertsAPI {
+  static async checkPhoneInLeads(
+    apiKey,
+    apiSecret,
+    phoneNumber,
+    timeout = 10000
+  ) {
+    try {
+      console.log(`🔍 Checking phone ${phoneNumber} in WhatConverts...`);
+
+      // Format phone number to E.164 format with + prefix
+      const formattedPhone = this.formatPhoneToE164(phoneNumber);
+      console.log(`📞 Formatted phone to E.164: ${formattedPhone}`);
+
+      const response = await APIManager.fetchWithTimeout(
+        `https://app.whatconverts.com/api/v1/leads/`,
+        {
+          headers: {
+            Authorization: `Basic ${Buffer.from(
+              `${apiKey}:${apiSecret}`
+            ).toString("base64")}`,
+            "Content-Type": "application/json",
+          },
+        },
+        timeout
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log(
+          `❌ WhatConverts API error: ${response.status} - ${errorText}`
+        );
+        throw new Error(
+          `WhatConverts API error: ${response.status} - ${errorText}`
+        );
+      }
+
+      const data = await response.json();
+      // Robustly extract leads array
+      let leads = [];
+      if (Array.isArray(data)) {
+        leads = data;
+      } else if (Array.isArray(data.leads)) {
+        leads = data.leads;
+      } else if (Array.isArray(data.data)) {
+        leads = data.data;
+      } else {
+        console.log("⚠️ WhatConverts raw response (unexpected shape):", data);
+      }
+
+      // Filter leads by phone number using E.164 format with + prefix
+      const leadsWithPhone = leads.filter((lead) => {
+        const leadPhone = lead.phone_number || lead.Phone || "";
+
+        // Try exact match with E.164 format (with +)
+        if (leadPhone === formattedPhone) {
+          return true;
+        }
+
+        // Try match without + prefix
+        if (leadPhone === formattedPhone.replace("+", "")) {
+          return true;
+        }
+
+        // Try match with + prefix if lead phone doesn't have it
+        if (
+          formattedPhone.startsWith("+") &&
+          leadPhone === formattedPhone.substring(1)
+        ) {
+          return true;
+        }
+
+        // Try match by removing all non-digits and comparing
+        const leadDigits = leadPhone.replace(/\D/g, "");
+        const formattedDigits = formattedPhone.replace(/\D/g, "");
+        if (leadDigits === formattedDigits) {
+          return true;
+        }
+
+        return false;
+      });
+
+      const phoneExists = leadsWithPhone.length > 0;
+
+      if (phoneExists) {
+        // Get the first lead (assuming one phone number per lead)
+        const lead = leadsWithPhone[0];
+        const gclid = lead.gclid || null;
+        const dateCreated = lead.date_created || lead.DateCreated || null;
+
+        console.log(
+          `📞 Phone ${formattedPhone} found in WhatConverts - gclid: ${
+            gclid ? "Present" : "Missing"
+          }, date_created: ${dateCreated || "Missing"}`
+        );
+
+        return {
+          exists: true,
+          gclid: gclid,
+          dateCreated: dateCreated,
+          hasGclid: !!gclid,
+        };
+      } else {
+        console.log(`📞 Phone ${formattedPhone} not found in WhatConverts`);
+        return {
+          exists: false,
+          gclid: null,
+          dateCreated: null,
+          hasGclid: false,
+        };
+      }
+    } catch (error) {
+      console.log(
+        `❌ WhatConverts API check failed for ${phoneNumber}: ${error.message}`
+      );
+      // Return false on error to be safe (don't include job if we can't verify)
+      return {
+        exists: false,
+        gclid: null,
+        dateCreated: null,
+        hasGclid: false,
+      };
+    }
+  }
+
+  static async checkMultiplePhonesInLeads(
+    apiKey,
+    apiSecret,
+    phoneNumbers,
+    timeout = 10000
+  ) {
+    try {
+      console.log(
+        `🔍 Checking ${phoneNumbers.length} phone numbers in WhatConverts...`
+      );
+
+      // Create a batch request or check phones individually
+      const results = {};
+
+      for (const phone of phoneNumbers) {
+        try {
+          const leadData = await this.checkPhoneInLeads(
+            apiKey,
+            apiSecret,
+            phone,
+            timeout
+          );
+          results[phone] = leadData;
+
+          // Add small delay between requests to avoid rate limiting
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        } catch (error) {
+          console.log(`❌ Failed to check phone ${phone}: ${error.message}`);
+          results[phone] = {
+            exists: false,
+            gclid: null,
+            dateCreated: null,
+            hasGclid: false,
+          };
+        }
+      }
+
+      const phonesFound = Object.values(results).filter((r) => r.exists).length;
+      const phonesWithGclid = Object.values(results).filter(
+        (r) => r.hasGclid
+      ).length;
+
+      console.log(
+        `📊 WhatConverts check results: ${phonesFound}/${phoneNumbers.length} phones found, ${phonesWithGclid} with gclid`
+      );
+      return results;
+    } catch (error) {
+      console.log(`❌ WhatConverts batch check failed: ${error.message}`);
+      // Return all false on batch error
+      return phoneNumbers.reduce((acc, phone) => {
+        acc[phone] = {
+          exists: false,
+          gclid: null,
+          dateCreated: null,
+          hasGclid: false,
+        };
+        return acc;
+      }, {});
+    }
+  }
+
+  // Helper method to format phone number to E.164 format with + prefix
+  static formatPhoneToE164(phoneNumber) {
+    if (!phoneNumber) return "";
+
+    // Remove all non-digit characters
+    const digits = phoneNumber.replace(/\D/g, "");
+
+    // If it's already 11 digits and starts with 1, ensure + prefix
+    if (digits.length === 11 && digits.startsWith("1")) {
+      return `+${digits}`;
+    }
+
+    // If it's 10 digits, assume US number and add +1
+    if (digits.length === 10) {
+      return `+1${digits}`;
+    }
+
+    // If it's already in E.164 format with +, return as is
+    if (phoneNumber.startsWith("+")) {
+      return phoneNumber;
+    }
+
+    // If it's 11 digits without +, add it
+    if (digits.length === 11) {
+      return `+${digits}`;
+    }
+
+    // For any other format, try to normalize to E.164
+    // If we have at least 10 digits, assume US number
+    if (digits.length >= 10) {
+      const last10Digits = digits.slice(-10);
+      return `+1${last10Digits}`;
+    }
+
+    // Otherwise, return with + prefix if it doesn't have one
+    return phoneNumber.startsWith("+") ? phoneNumber : `+${phoneNumber}`;
+  }
+}
 
 connectToMongoDB().then(() => {
   app.listen(port, () => {

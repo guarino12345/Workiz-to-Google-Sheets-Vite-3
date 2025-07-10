@@ -5,6 +5,8 @@ export interface Account {
   name: string;
   workizApiToken: string;
   googleSheetsId: string;
+  whatconvertsApiKey?: string;
+  whatconvertsApiSecret?: string;
   sourceFilter: string[];
   defaultConversionValue: number;
   // New scheduling fields
@@ -64,6 +66,8 @@ export interface WorkizJob {
     Name: string;
   }>;
   accountId?: string; // Added for database storage
+  gclid?: string; // Added from WhatConverts
+  whatconvertsDateCreated?: string; // Added from WhatConverts
 }
 
 // Job types (simplified for UI)
@@ -112,6 +116,12 @@ export interface SyncHistory {
     
     // Enhanced details
     syncMethod?: 'manual' | 'cron';
+    whatconvertsEnabled?: boolean;
+    whatconvertsStats?: {
+      jobsWithGclid: number;
+      jobsWithoutGclid: number;
+      totalJobsWithGclid: number;
+    };
     errorDetails?: string;
     jobStatusBreakdown?: {
       submitted: number;

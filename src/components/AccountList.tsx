@@ -92,6 +92,8 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
           name: editingAccount.name,
           sourceFilter: editingAccount.sourceFilter,
           googleSheetsId: editingAccount.googleSheetsId,
+          whatconvertsApiKey: editingAccount.whatconvertsApiKey,
+          whatconvertsApiSecret: editingAccount.whatconvertsApiSecret,
           defaultConversionValue: editingAccount.defaultConversionValue,
           syncEnabled: editingAccount.syncEnabled,
           syncFrequency: editingAccount.syncFrequency,
@@ -245,6 +247,10 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
                     Auto Sync: {account.syncEnabled ? 'Enabled' : 'Disabled'}
                     {account.syncEnabled && ` (${account.syncFrequency} at ${account.syncTime})`}
                   </Typography>
+                  <br />
+                  <Typography component="span" variant="body2" color="text.secondary">
+                    WhatConverts: {account.whatconvertsApiKey && account.whatconvertsApiSecret ? '✅ Configured' : '❌ Not configured'}
+                  </Typography>
                 </>
               }
             />
@@ -279,6 +285,31 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
             value={editingAccount?.googleSheetsId || ''}
             onChange={handleGoogleSheetsIdChange}
             sx={{ mb: 2 }}
+          />
+          <TextField
+            margin="dense"
+            label="WhatConverts API Key (Optional)"
+            fullWidth
+            value={editingAccount?.whatconvertsApiKey || ''}
+            onChange={(e) => setEditingAccount(editingAccount ? {
+              ...editingAccount,
+              whatconvertsApiKey: e.target.value
+            } : null)}
+            sx={{ mb: 2 }}
+            helperText="WhatConverts API Key (token) - if provided, jobs will only be synced if the phone number exists in WhatConverts leads"
+          />
+          <TextField
+            margin="dense"
+            label="WhatConverts API Secret (Optional)"
+            fullWidth
+            type="password"
+            value={editingAccount?.whatconvertsApiSecret || ''}
+            onChange={(e) => setEditingAccount(editingAccount ? {
+              ...editingAccount,
+              whatconvertsApiSecret: e.target.value
+            } : null)}
+            sx={{ mb: 2 }}
+            helperText="WhatConverts API Secret - required if API Key is provided"
           />
           <TextField
             margin="dense"

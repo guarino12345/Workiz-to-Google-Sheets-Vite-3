@@ -25,6 +25,8 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
   const [formData, setFormData] = useState<Partial<Account>>({
     workizApiToken: '',
     googleSheetsId: '',
+    whatconvertsApiKey: '',
+    whatconvertsApiSecret: '',
     sourceFilter: [],
     defaultConversionValue: 0,
     name: '',
@@ -60,6 +62,7 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
       setFormData({
         workizApiToken: '',
         googleSheetsId: '',
+        whatconvertsApiKey: '',
         sourceFilter: [],
         defaultConversionValue: 0,
         name: '',
@@ -112,6 +115,25 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
         onChange={(e) => setFormData({ ...formData, googleSheetsId: e.target.value })}
         margin="normal"
         required
+      />
+
+      <TextField
+        fullWidth
+        label="WhatConverts API Key (Optional)"
+        value={formData.whatconvertsApiKey || ''}
+        onChange={(e) => setFormData({ ...formData, whatconvertsApiKey: e.target.value })}
+        margin="normal"
+        helperText="WhatConverts API Key (token) - if provided, jobs will only be synced if the phone number exists in WhatConverts leads"
+      />
+
+      <TextField
+        fullWidth
+        label="WhatConverts API Secret (Optional)"
+        value={formData.whatconvertsApiSecret || ''}
+        onChange={(e) => setFormData({ ...formData, whatconvertsApiSecret: e.target.value })}
+        margin="normal"
+        helperText="WhatConverts API Secret - required if API Key is provided"
+        type="password"
       />
 
       <TextField

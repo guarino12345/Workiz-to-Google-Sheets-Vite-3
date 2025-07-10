@@ -141,6 +141,27 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
               Sync method: {getSyncMethodLabel(sync.details.syncMethod)}
             </Typography>
           )}
+          {sync.details.whatconvertsEnabled !== undefined && (
+            <Typography variant="body2" color="text.secondary">
+              WhatConverts filtering: {sync.details.whatconvertsEnabled ? 'Enabled' : 'Disabled'}
+            </Typography>
+          )}
+          {sync.details.whatconvertsStats && (
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'green.50', borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight="bold" color="text.primary">
+                WhatConverts GCLID Statistics:
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs with GCLID: {sync.details.whatconvertsStats.jobsWithGclid}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs without GCLID: {sync.details.whatconvertsStats.jobsWithoutGclid}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Total jobs with GCLID: {sync.details.whatconvertsStats.totalJobsWithGclid}
+              </Typography>
+            </Box>
+          )}
           {sync.details.jobStatusBreakdown && (
             <Box sx={{ mt: 1, p: 1, bgcolor: 'grey.50', borderRadius: 1 }}>
               <Typography variant="body2" fontWeight="bold" color="text.primary">
@@ -178,6 +199,27 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
             <Typography variant="body2" color="text.secondary">
               Sync method: {getSyncMethodLabel(sync.details.syncMethod)}
             </Typography>
+          )}
+          {sync.details.whatconvertsEnabled !== undefined && (
+            <Typography variant="body2" color="text.secondary">
+              WhatConverts filtering: {sync.details.whatconvertsEnabled ? 'Enabled' : 'Disabled'}
+            </Typography>
+          )}
+          {sync.details.whatconvertsStats && (
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'green.50', borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight="bold" color="text.primary">
+                WhatConverts GCLID Statistics:
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs with GCLID: {sync.details.whatconvertsStats.jobsWithGclid}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs without GCLID: {sync.details.whatconvertsStats.jobsWithoutGclid}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Total jobs with GCLID: {sync.details.whatconvertsStats.totalJobsWithGclid}
+              </Typography>
+            </Box>
           )}
           {sync.details.sampleJobSources && sync.details.sampleJobSources.length > 0 && (
             <Typography variant="body2" color="text.secondary">
