@@ -975,11 +975,27 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
         });
       }
 
+      // Calculate 50-day cutoff date for job updates
+      const fiftyDaysAgo = new Date();
+      fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
+
+      // Count total jobs within 50-day window for batch planning
+      const totalJobsInWindow = await db.collection("jobs").countDocuments({
+        accountId: account._id || account.id,
+        JobDateTime: { $gte: fiftyDaysAgo.toISOString() },
+      });
+
+      console.log(
+        `📅 Found ${totalJobsInWindow} jobs within 50-day window (since ${
+          fiftyDaysAgo.toISOString().split("T")[0]
+        })`
+      );
+
       // Create batch processing state
       batchState = await BatchProcessingManager.createBatchState(
         db,
         accountId,
-        existingJobs.length
+        totalJobsInWindow
       );
     } else {
       console.log(`🔄 Resuming batch processing for account ${account.name}`);
@@ -988,12 +1004,19 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
       );
     }
 
-    // Get jobs for current batch
+    // Calculate 50-day cutoff date for job updates
+    const fiftyDaysAgo = new Date();
+    fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
+
+    // Get jobs for current batch (only jobs from last 50 days)
     const BATCH_SIZE = 29;
     const startIndex = batchState.currentBatch * BATCH_SIZE;
     const existingJobs = await db
       .collection("jobs")
-      .find({ accountId: account._id || account.id })
+      .find({
+        accountId: account._id || account.id,
+        JobDateTime: { $gte: fiftyDaysAgo.toISOString() },
+      })
       .skip(startIndex)
       .limit(BATCH_SIZE)
       .toArray();
@@ -1016,6 +1039,7 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
           failedUpdates: batchState.failedUpdates,
           duration: Date.now() - functionStartTime,
           processingMethod: "hybrid-batch",
+          cutoffDate: fiftyDaysAgo.toISOString().split("T")[0],
         },
       });
     }
@@ -1030,7 +1054,12 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
       } (${existingJobs.length} jobs)`
     );
     console.log(
-      `📅 Jobs older than ${
+      `📅 Only updating jobs from last 50 days (since ${
+        fiftyDaysAgo.toISOString().split("T")[0]
+      })`
+    );
+    console.log(
+      `🗑️ Jobs older than ${
         oneYearAgo.toISOString().split("T")[0]
       } will be deleted`
     );
@@ -1759,12 +1788,19 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
       `📊 Current progress: ${batchState.currentBatch}/${batchState.totalBatches} batches`
     );
 
-    // Get jobs for current batch
+    // Calculate 50-day cutoff date for job updates
+    const fiftyDaysAgo = new Date();
+    fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
+
+    // Get jobs for current batch (only jobs from last 50 days)
     const BATCH_SIZE = 29;
     const startIndex = batchState.currentBatch * BATCH_SIZE;
     const existingJobs = await db
       .collection("jobs")
-      .find({ accountId: account._id || account.id })
+      .find({
+        accountId: account._id || account.id,
+        JobDateTime: { $gte: fiftyDaysAgo.toISOString() },
+      })
       .skip(startIndex)
       .limit(BATCH_SIZE)
       .toArray();
@@ -1787,6 +1823,7 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
           failedUpdates: batchState.failedUpdates,
           duration: Date.now() - functionStartTime,
           processingMethod: "hybrid-batch-continuation",
+          cutoffDate: fiftyDaysAgo.toISOString().split("T")[0],
         },
       });
     }
@@ -1799,6 +1836,11 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
       `📦 Processing batch ${batchState.currentBatch + 1}/${
         batchState.totalBatches
       } (${existingJobs.length} jobs)`
+    );
+    console.log(
+      `📅 Only updating jobs from last 50 days (since ${
+        fiftyDaysAgo.toISOString().split("T")[0]
+      })`
     );
 
     const batchStartTime = Date.now();
