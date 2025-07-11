@@ -1470,6 +1470,10 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
       );
     }
 
+    // Determine if account has WhatConverts configured
+    const hasWhatConverts =
+      account.whatconvertsApiKey && account.whatconvertsApiSecret;
+
     // Additional filtering for WhatConverts accounts - only include jobs with gclid
     let jobsWithGclid = 0;
     let jobsWithoutGclid = 0;
@@ -1537,10 +1541,6 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
 
     const sheets = google.sheets({ version: "v4", auth });
     console.log(`🔐 Google Sheets client initialized`);
-
-    // Determine if account has WhatConverts configured
-    const hasWhatConverts =
-      account.whatconvertsApiKey && account.whatconvertsApiSecret;
 
     // Set headers and range based on account type
     let headers, sheetRange, columnCount;
