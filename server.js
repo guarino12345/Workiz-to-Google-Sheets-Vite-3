@@ -1470,6 +1470,29 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
       );
     }
 
+    // Additional filtering for WhatConverts accounts - only include jobs with gclid
+    let jobsWithGclid = 0;
+    let jobsWithoutGclid = 0;
+
+    if (hasWhatConverts) {
+      const beforeGclidCount = filteredJobs.length;
+      filteredJobs = filteredJobs.filter((job) => {
+        if (job.gclid) {
+          jobsWithGclid++;
+          return true;
+        } else {
+          jobsWithoutGclid++;
+          console.log(`⚠️ Skipping job ${job.UUID} - no gclid found`);
+          return false;
+        }
+      });
+      console.log(
+        `🔍 Filtered jobs by gclid: ${beforeGclidCount} → ${filteredJobs.length} jobs (${jobsWithGclid} with gclid, ${jobsWithoutGclid} skipped)`
+      );
+    } else {
+      console.log(`⚠️ No WhatConverts configured, no gclid filtering applied`);
+    }
+
     if (filteredJobs.length === 0) {
       console.log(`⚠️ No jobs match the sourceFilter criteria`);
       return res.json({
@@ -1515,33 +1538,85 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
     const sheets = google.sheets({ version: "v4", auth });
     console.log(`🔐 Google Sheets client initialized`);
 
-    // Clear the sheet first (skip header row)
-    console.log(`🧹 Clearing existing data from sheet (preserving headers)...`);
+    // Determine if account has WhatConverts configured
+    const hasWhatConverts =
+      account.whatconvertsApiKey && account.whatconvertsApiSecret;
+
+    // Set headers and range based on account type
+    let headers, sheetRange, columnCount;
+
+    if (hasWhatConverts) {
+      headers = [
+        [
+          "Google Click ID",
+          "Conversion Name",
+          "Conversion Time",
+          "Conversion Value",
+          "Conversion Currency",
+        ],
+      ];
+      sheetRange = "Sheet1!A1:E";
+      columnCount = 5;
+      console.log(`📊 WhatConverts account detected - using 5-column format`);
+    } else {
+      headers = [
+        [
+          "Phone Number",
+          "Call Start Time",
+          "Conversion Name",
+          "Conversion Time",
+          "Conversion Value",
+          "Conversion Currency",
+        ],
+      ];
+      sheetRange = "Sheet1!A1:F";
+      columnCount = 6;
+      console.log(
+        `📊 Non-WhatConverts account detected - using 6-column format`
+      );
+    }
+
+    // Clear the entire sheet and set headers
+    console.log(`🧹 Clearing entire sheet and setting headers...`);
     try {
       await RetryHandler.withRetry(
         async () => {
+          // Clear the entire sheet
           await sheets.spreadsheets.values.clear({
             spreadsheetId: account.googleSheetsId,
-            range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+            range: "Sheet1!A:F",
+          });
+
+          // Set the appropriate headers
+          await sheets.spreadsheets.values.update({
+            spreadsheetId: account.googleSheetsId,
+            range: "Sheet1!A1",
+            valueInputOption: "USER_ENTERED",
+            requestBody: {
+              values: headers,
+            },
           });
         },
         3,
         1000,
         sheetsCircuitBreaker
       );
-      console.log(`✅ Sheet cleared successfully (headers preserved)`);
+      console.log(`✅ Sheet cleared and headers set successfully`);
     } catch (error) {
-      console.log(`❌ Error clearing sheet: ${error.message}`);
+      console.log(`❌ Error clearing/setting sheet: ${error.message}`);
       return res.status(500).json({
-        error: "Failed to clear Google Sheet",
+        error: "Failed to clear/set Google Sheet",
         details: error.message,
       });
     }
 
-    // Prepare data for Google Sheets
+    // Prepare data for Google Sheets based on account type
     console.log(
-      `📝 Preparing ${filteredJobs.length} jobs for Google Sheets...`
+      `📝 Preparing ${filteredJobs.length} jobs for Google Sheets (${
+        hasWhatConverts ? "WhatConverts" : "Standard"
+      } format)...`
     );
+
     const values = filteredJobs.map((job, index) => {
       const formattedTime =
         formatInTimeZone(
@@ -1550,15 +1625,7 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
           "yyyy-MM-dd'T'HH:mm:ss"
         ) + " America/Los_Angeles";
 
-      if (index < 3) {
-        console.log(
-          `📋 Sample job ${index + 1}: ${job.Phone} | ${formattedTime} | ${
-            job.JobSource
-          }`
-        );
-      }
-
-      // New conversion value logic
+      // Conversion value logic
       let conversionValue = account.defaultConversionValue || 0;
 
       // If JobTotalPrice has a value and is not 0, use it
@@ -1574,25 +1641,54 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         conversionValue = 0;
       }
 
-      return [
-        job.Phone || "", // Caller's Phone Number
-        formattedTime, // Call Start Time
-        "Google Ads Convert", // Conversion Name
-        "", // Conversion Time (blank)
-        conversionValue, // Conversion Value
-        "USD", // Conversion Currency
-      ];
+      if (index < 3) {
+        if (hasWhatConverts) {
+          console.log(
+            `📋 Sample job ${index + 1}: ${job.gclid} | ${formattedTime} | ${
+              job.JobSource
+            }`
+          );
+        } else {
+          console.log(
+            `📋 Sample job ${index + 1}: ${job.Phone} | ${formattedTime} | ${
+              job.JobSource
+            }`
+          );
+        }
+      }
+
+      // Return different formats based on account type
+      if (hasWhatConverts) {
+        // WhatConverts format: 5 columns
+        return [
+          job.gclid || "", // Google Click ID
+          "Google Ads Convert", // Conversion Name
+          formattedTime, // Conversion Time (using JobDateTime)
+          conversionValue, // Conversion Value
+          "USD", // Conversion Currency
+        ];
+      } else {
+        // Standard format: 6 columns
+        return [
+          job.Phone || "", // Phone Number
+          formattedTime, // Call Start Time
+          "Google Ads Convert", // Conversion Name
+          formattedTime, // Conversion Time (using JobDateTime)
+          conversionValue, // Conversion Value
+          "USD", // Conversion Currency
+        ];
+      }
     });
 
     console.log(`📊 Prepared ${values.length} rows for Google Sheets`);
 
-    // Add to Google Sheet (starting from row 2 to preserve headers)
+    // Add to Google Sheet (starting from row 2 after headers)
     console.log(`📤 Adding data to Google Sheet (starting from row 2)...`);
     const response = await RetryHandler.withRetry(
       async () => {
         return await sheets.spreadsheets.values.append({
           spreadsheetId: account.googleSheetsId,
-          range: "Sheet1!A2:F", // Start from row 2 to preserve headers
+          range: `Sheet1!A2:${String.fromCharCode(65 + columnCount - 1)}2`, // Dynamic range based on column count
           valueInputOption: "USER_ENTERED",
           requestBody: {
             values,
@@ -1623,6 +1719,14 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
           ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
         ],
         syncMethod: "manual",
+        formatType: hasWhatConverts ? "whatconverts" : "standard",
+        columnCount: columnCount,
+        whatconvertsStats: hasWhatConverts
+          ? {
+              jobsWithGclid: jobsWithGclid,
+              jobsWithoutGclid: jobsWithoutGclid,
+            }
+          : null,
         jobStatusBreakdown: {
           submitted: filteredJobs.filter((j) => j.Status === "Submitted")
             .length,
@@ -1648,7 +1752,7 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
             )
           ).length,
           totalConversionValue: values.reduce(
-            (sum, row) => sum + (row[4] || 0),
+            (sum, row) => sum + (row[hasWhatConverts ? 3 : 4] || 0),
             0
           ),
         },
@@ -1686,10 +1790,18 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         filteredJobs: filteredJobs.length,
         updatedRows: response.data.updates?.updatedRows || 0,
         sourceFilter: account.sourceFilter,
+        formatType: hasWhatConverts ? "whatconverts" : "standard",
+        columnCount: columnCount,
         sampleJobSources: [
           ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
         ],
         syncMethod: "manual",
+        whatconvertsStats: hasWhatConverts
+          ? {
+              jobsWithGclid: jobsWithGclid,
+              jobsWithoutGclid: jobsWithoutGclid,
+            }
+          : null,
         jobStatusBreakdown: {
           submitted: filteredJobs.filter((j) => j.Status === "Submitted")
             .length,
@@ -1715,7 +1827,7 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
             )
           ).length,
           totalConversionValue: values.reduce(
-            (sum, row) => sum + (row[4] || 0),
+            (sum, row) => sum + (row[hasWhatConverts ? 3 : 4] || 0),
             0
           ),
         },
