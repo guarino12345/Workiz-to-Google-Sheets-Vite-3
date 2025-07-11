@@ -470,8 +470,13 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
         .json({ error: "Missing API token for this account" });
     }
 
+    // Calculate start_date as 2 months before current date
+    const startDate = new Date();
+    startDate.setMonth(startDate.getMonth() - 2);
+    const startDateStr = startDate.toISOString().split("T")[0]; // Format as YYYY-MM-DD
+
     // Fetch jobs from Workiz API using the token from the account
-    const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
+    const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=${startDateStr}&offset=0&records=100&only_open=false`;
     console.log(`🌐 Fetching from Workiz: ${workizUrl}`);
 
     const response = await RetryHandler.withRetry(
@@ -1479,7 +1484,12 @@ app.post("/api/trigger-sync/:accountId", async (req, res) => {
 
     // Sync jobs
     try {
-      const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
+      // Calculate start_date as 2 months before current date
+      const startDate = new Date();
+      startDate.setMonth(startDate.getMonth() - 2);
+      const startDateStr = startDate.toISOString().split("T")[0]; // Format as YYYY-MM-DD
+
+      const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=${startDateStr}&offset=0&records=100&only_open=false`;
       const response = await fetch(workizUrl);
 
       if (!response.ok) {
@@ -1660,8 +1670,13 @@ for (let i = 1; i <= 10; i++) {
           throw new Error("Missing API token for this account");
         }
 
+        // Calculate start_date as 2 months before current date
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - 2);
+        const startDateStr = startDate.toISOString().split("T")[0]; // Format as YYYY-MM-DD
+
         // Fetch jobs from Workiz API
-        const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
+        const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=${startDateStr}&offset=0&records=100&only_open=false`;
         console.log(`🌐 Fetching from Workiz: ${workizUrl}`);
 
         const response = await RetryHandler.withRetry(
@@ -2005,8 +2020,13 @@ app.get("/api/cron/sync-jobs/batch", async (req, res) => {
           throw new Error("Missing API token for this account");
         }
 
+        // Calculate start_date as 2 months before current date
+        const startDate = new Date();
+        startDate.setMonth(startDate.getMonth() - 2);
+        const startDateStr = startDate.toISOString().split("T")[0]; // Format as YYYY-MM-DD
+
         // Fetch jobs from Workiz API
-        const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=2025-01-01&offset=0&records=100&only_open=false`;
+        const workizUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/all/?start_date=${startDateStr}&offset=0&records=100&only_open=false`;
 
         const response = await RetryHandler.withRetry(
           async () => {
