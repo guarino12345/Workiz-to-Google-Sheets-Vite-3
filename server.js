@@ -876,7 +876,8 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
 
     // Process jobs in batches to avoid memory issues and rate limiting
     const BATCH_SIZE = 29;
-    const DELAY_BETWEEN_BATCHES = 20000; // 20 seconds in milliseconds
+    const DELAY_BETWEEN_BATCHES = 60000; // 60 seconds in milliseconds
+    const DELAY_BETWEEN_JOBS = 5000; // 5 seconds (5000ms) between individual job updates
 
     for (let i = 0; i < existingJobs.length; i += BATCH_SIZE) {
       const batch = existingJobs.slice(i, i + BATCH_SIZE);
@@ -983,8 +984,10 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
             deletedJobsCount++;
           }
 
-          // Add a delay between individual job updates (3000ms)
-          await new Promise((resolve) => setTimeout(resolve, 3000));
+          // Add a delay between individual job updates (5000ms)
+          await new Promise((resolve) =>
+            setTimeout(resolve, DELAY_BETWEEN_JOBS)
+          );
         } catch (error) {
           // Check if it's a circuit breaker error
           if (error.message.includes("Circuit breaker is OPEN")) {
@@ -1010,7 +1013,7 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
 
       // Add delay between batches (except for the last batch)
       if (i + BATCH_SIZE < existingJobs.length) {
-        console.log(`⏳ Waiting 20 seconds before next batch...`);
+        console.log(`⏳ Waiting 60 seconds before next batch...`);
         await new Promise((resolve) =>
           setTimeout(resolve, DELAY_BETWEEN_BATCHES)
         );
