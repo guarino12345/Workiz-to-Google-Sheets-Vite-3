@@ -680,6 +680,9 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
       );
     }
 
+    // Initialize jobsWithGclid variable
+    let jobsWithGclid = 0;
+
     // Additional filtering by WhatConverts if API key and secret are configured
     if (
       account.whatconvertsApiKey &&
@@ -705,7 +708,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
 
       // Filter jobs to only include those with phones found in WhatConverts AND have gclid
       const beforeWhatconvertsCount = filteredJobs.length;
-      let jobsWithGclid = 0;
 
       filteredJobs = filteredJobs.filter((job) => {
         if (!job.Phone || job.Phone.trim() === "") {
