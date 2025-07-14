@@ -3336,11 +3336,8 @@ class WhatConvertsAPI {
     timeout = 10000
   ) {
     try {
-      console.log(`🔍 Checking phone ${phoneNumber} in WhatConverts...`);
-
       // Format phone number to E.164 format with + prefix
       const formattedPhone = this.formatPhoneToE164(phoneNumber);
-      console.log(`📞 Formatted phone to E.164: ${formattedPhone}`);
 
       // Calculate start_date as 2 months before current date
       const startDate = new Date();
@@ -3351,7 +3348,6 @@ class WhatConvertsAPI {
       const url = `https://app.whatconverts.com/api/v1/leads?start_date=${startDateStr}&phone_number=${encodeURIComponent(
         formattedPhone
       )}`;
-      console.log(`🌐 WhatConverts API URL: ${url}`);
 
       const response = await APIManager.fetchWithTimeout(
         url,
@@ -3377,7 +3373,6 @@ class WhatConvertsAPI {
       }
 
       const data = await response.json();
-      console.log(`📊 WhatConverts API response for ${formattedPhone}:`, data);
 
       // Robustly extract leads array
       let leads = [];
@@ -3387,11 +3382,7 @@ class WhatConvertsAPI {
         leads = data.leads;
       } else if (Array.isArray(data.data)) {
         leads = data.data;
-      } else {
-        console.log("⚠️ WhatConverts raw response (unexpected shape):", data);
       }
-
-      console.log(`📋 Found ${leads.length} leads for phone ${formattedPhone}`);
 
       const phoneExists = leads.length > 0;
 
@@ -3401,12 +3392,6 @@ class WhatConvertsAPI {
         const gclid = lead.gclid || null;
         const dateCreated = lead.date_created || lead.DateCreated || null;
 
-        console.log(
-          `📞 Phone ${formattedPhone} found in WhatConverts - gclid: ${
-            gclid ? "Present" : "Missing"
-          }, date_created: ${dateCreated || "Missing"}`
-        );
-
         return {
           exists: true,
           gclid: gclid,
@@ -3414,7 +3399,6 @@ class WhatConvertsAPI {
           hasGclid: !!gclid,
         };
       } else {
-        console.log(`📞 Phone ${formattedPhone} not found in WhatConverts`);
         return {
           exists: false,
           gclid: null,
@@ -3443,10 +3427,6 @@ class WhatConvertsAPI {
     timeout = 10000
   ) {
     try {
-      console.log(
-        `🔍 Checking ${phoneNumbers.length} phone numbers in WhatConverts...`
-      );
-
       // Create a batch request or check phones individually
       const results = {};
 
