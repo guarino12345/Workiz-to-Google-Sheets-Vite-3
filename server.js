@@ -2133,6 +2133,8 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
     });
   } catch (error) {
     console.log(`❌ Continue batch processing error: ${error.message}`);
+    console.log(`❌ Error stack: ${error.stack}`);
+    console.log(`❌ Account ID: ${req.params.accountId}`);
 
     // Record failed sync history if we have account info
     if (req.params.accountId) {
@@ -2144,7 +2146,10 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
           timestamp: new Date(),
           duration: Date.now() - functionStartTime,
           errorMessage: error.message,
-          details: { processingMethod: "hybrid-batch-continuation" },
+          details: {
+            processingMethod: "hybrid-batch-continuation",
+            errorStack: error.stack,
+          },
         };
         await db.collection("syncHistory").insertOne(syncHistoryRecord);
         console.log(`📝 Failed sync history recorded for batch continuation`);
@@ -2155,7 +2160,14 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
       }
     }
 
-    res.status(500).json({ error: error.message });
+    res.status(500).json({
+      error: error.message,
+      details: {
+        accountId: req.params.accountId,
+        timestamp: new Date().toISOString(),
+        processingMethod: "hybrid-batch-continuation",
+      },
+    });
   }
 });
 
@@ -2956,6 +2968,8 @@ app.get("/api/cron/continue-batch-processing", async (req, res) => {
 
     // Find paused batch processing states that are ready to continue
     const now = new Date();
+    console.log(`🕐 Current time: ${now.toISOString()}`);
+
     const readyBatches = await db
       .collection("batchProcessing")
       .find({
@@ -2968,6 +2982,20 @@ app.get("/api/cron/continue-batch-processing", async (req, res) => {
     console.log(
       `📋 Found ${readyBatches.length} batch processing states ready to continue`
     );
+
+    if (readyBatches.length > 0) {
+      console.log(
+        `📋 Batch details:`,
+        readyBatches.map((batch) => ({
+          accountId: batch.accountId,
+          status: batch.status,
+          currentBatch: batch.currentBatch,
+          totalBatches: batch.totalBatches,
+          nextBatchTime: batch.nextBatchTime,
+          stopRequested: batch.stopRequested,
+        }))
+      );
+    }
 
     if (readyBatches.length === 0) {
       return res.json({
@@ -2985,18 +3013,41 @@ app.get("/api/cron/continue-batch-processing", async (req, res) => {
           `🔄 Continuing batch processing for account: ${batchState.accountId}`
         );
 
+        // Check if account exists before continuing
+        const account = await db.collection("accounts").findOne({
+          $or: [
+            { _id: new ObjectId(batchState.accountId) },
+            { id: batchState.accountId },
+          ],
+        });
+
+        if (!account) {
+          console.log(
+            `❌ Account not found for batch processing: ${batchState.accountId}`
+          );
+          results.push({
+            accountId: batchState.accountId,
+            success: false,
+            error: "Account not found",
+          });
+          continue;
+        }
+
+        console.log(`✅ Account found: ${account.name}`);
+
         // Call the continuation endpoint
-        const response = await fetch(
-          `${req.protocol}://${req.get("host")}/api/continue-update-cleanup/${
-            batchState.accountId
-          }`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-          }
-        );
+        const continuationUrl = `${req.protocol}://${req.get(
+          "host"
+        )}/api/continue-update-cleanup/${batchState.accountId}`;
+
+        console.log(`🌐 Calling continuation endpoint: ${continuationUrl}`);
+
+        const response = await fetch(continuationUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
 
         if (response.ok) {
           const result = await response.json();
@@ -3010,14 +3061,17 @@ app.get("/api/cron/continue-batch-processing", async (req, res) => {
           );
         } else {
           const errorText = await response.text();
+          console.log(
+            `❌ Failed to continue batch processing for account: ${batchState.accountId}`
+          );
+          console.log(`❌ HTTP Status: ${response.status}`);
+          console.log(`❌ Error Response: ${errorText}`);
+
           results.push({
             accountId: batchState.accountId,
             success: false,
             error: `HTTP ${response.status}: ${errorText}`,
           });
-          console.log(
-            `❌ Failed to continue batch processing for account: ${batchState.accountId}`
-          );
         }
       } catch (error) {
         results.push({
