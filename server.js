@@ -1823,314 +1823,307 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
   }
 });
 
-// Continuation endpoint for batch processing
-app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
-  const functionStartTime = Date.now();
+// Batch continuation processing function (can be called directly)
+async function processBatchContinuation(accountId, functionStartTime) {
+  const db = await ensureDbConnection();
+  console.log(`🔄 Continuing batch processing for account ID: ${accountId}`);
 
-  try {
-    const db = await ensureDbConnection();
-    const { accountId } = req.params;
-    console.log(`🔄 Continuing batch processing for account ID: ${accountId}`);
+  // Find account by ID - try both id and _id fields
+  const account = await db.collection("accounts").findOne({
+    $or: [{ _id: new ObjectId(accountId) }, { id: accountId }],
+  });
 
-    // Find account by ID - try both id and _id fields
-    const account = await db.collection("accounts").findOne({
-      $or: [{ _id: new ObjectId(accountId) }, { id: accountId }],
+  if (!account) {
+    console.log(`❌ Account not found for ID: ${accountId}`);
+    throw new Error("Account not found");
+  }
+
+  // Get current batch state
+  const batchState = await BatchProcessingManager.getBatchState(db, accountId);
+
+  if (!batchState) {
+    throw new Error("No active batch processing found");
+  }
+
+  console.log(`🔄 Continuing batch processing for account ${account.name}`);
+  console.log(
+    `📊 Current progress: ${batchState.currentBatch}/${batchState.totalBatches} batches`
+  );
+
+  // Calculate 50-day cutoff date for job updates
+  const fiftyDaysAgo = new Date();
+  fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
+
+  // Get jobs for current batch (only jobs from last 50 days)
+  const BATCH_SIZE = 29;
+  const startIndex = batchState.currentBatch * BATCH_SIZE;
+  const existingJobs = await db
+    .collection("jobs")
+    .find({
+      accountId: account._id || account.id,
+      JobDateTime: { $gte: fiftyDaysAgo.toISOString() },
+    })
+    .skip(startIndex)
+    .limit(BATCH_SIZE)
+    .toArray();
+
+  if (existingJobs.length === 0) {
+    // No more jobs to process, complete the batch state
+    await BatchProcessingManager.completeBatchState(db, accountId, {
+      processedJobs: batchState.processedJobs,
+      updatedJobs: batchState.updatedJobs,
+      deletedJobs: batchState.deletedJobs,
+      failedUpdates: batchState.failedUpdates,
     });
 
-    if (!account) {
-      console.log(`❌ Account not found for ID: ${accountId}`);
-      return res.status(404).json({ error: "Account not found" });
-    }
-
-    // Get current batch state
-    const batchState = await BatchProcessingManager.getBatchState(
-      db,
-      accountId
-    );
-
-    if (!batchState) {
-      return res
-        .status(404)
-        .json({ error: "No active batch processing found" });
-    }
-
-    console.log(`🔄 Continuing batch processing for account ${account.name}`);
-    console.log(
-      `📊 Current progress: ${batchState.currentBatch}/${batchState.totalBatches} batches`
-    );
-
-    // Calculate 50-day cutoff date for job updates
-    const fiftyDaysAgo = new Date();
-    fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
-
-    // Get jobs for current batch (only jobs from last 50 days)
-    const BATCH_SIZE = 29;
-    const startIndex = batchState.currentBatch * BATCH_SIZE;
-    const existingJobs = await db
-      .collection("jobs")
-      .find({
-        accountId: account._id || account.id,
-        JobDateTime: { $gte: fiftyDaysAgo.toISOString() },
-      })
-      .skip(startIndex)
-      .limit(BATCH_SIZE)
-      .toArray();
-
-    if (existingJobs.length === 0) {
-      // No more jobs to process, complete the batch state
-      await BatchProcessingManager.completeBatchState(db, accountId, {
-        processedJobs: batchState.processedJobs,
-        updatedJobs: batchState.updatedJobs,
-        deletedJobs: batchState.deletedJobs,
+    return {
+      message: `Job update and cleanup completed for account ${account.name}`,
+      details: {
+        totalJobsProcessed: batchState.processedJobs,
+        jobsUpdated: batchState.updatedJobs,
+        jobsDeleted: batchState.deletedJobs,
         failedUpdates: batchState.failedUpdates,
-      });
+        duration: Date.now() - functionStartTime,
+        processingMethod: "hybrid-batch-continuation",
+        cutoffDate: fiftyDaysAgo.toISOString().split("T")[0],
+      },
+    };
+  }
 
-      return res.json({
-        message: `Job update and cleanup completed for account ${account.name}`,
-        details: {
-          totalJobsProcessed: batchState.processedJobs,
-          jobsUpdated: batchState.updatedJobs,
-          jobsDeleted: batchState.deletedJobs,
-          failedUpdates: batchState.failedUpdates,
-          duration: Date.now() - functionStartTime,
-          processingMethod: "hybrid-batch-continuation",
-          cutoffDate: fiftyDaysAgo.toISOString().split("T")[0],
-        },
-      });
-    }
+  // Calculate 1-year cutoff date
+  const oneYearAgo = new Date();
+  oneYearAgo.setDate(oneYearAgo.getDate() - 365);
 
-    // Calculate 1-year cutoff date
-    const oneYearAgo = new Date();
-    oneYearAgo.setDate(oneYearAgo.getDate() - 365);
+  console.log(
+    `📦 Processing batch ${batchState.currentBatch + 1}/${
+      batchState.totalBatches
+    } (${existingJobs.length} jobs)`
+  );
+  console.log(
+    `📅 Only updating jobs from last 50 days (since ${
+      fiftyDaysAgo.toISOString().split("T")[0]
+    })`
+  );
 
-    console.log(
-      `📦 Processing batch ${batchState.currentBatch + 1}/${
-        batchState.totalBatches
-      } (${existingJobs.length} jobs)`
-    );
-    console.log(
-      `📅 Only updating jobs from last 50 days (since ${
-        fiftyDaysAgo.toISOString().split("T")[0]
-      })`
-    );
+  const batchStartTime = Date.now();
+  let batchUpdatedJobs = 0;
+  let batchDeletedJobs = 0;
+  let batchFailedUpdates = 0;
 
-    const batchStartTime = Date.now();
-    let batchUpdatedJobs = 0;
-    let batchDeletedJobs = 0;
-    let batchFailedUpdates = 0;
+  // Process each job in the current batch
+  for (const existingJob of existingJobs) {
+    try {
+      const jobDate = new Date(existingJob.JobDateTime);
 
-    // Process each job in the current batch
-    for (const existingJob of existingJobs) {
-      try {
-        const jobDate = new Date(existingJob.JobDateTime);
+      // Check if job is older than 1 year
+      if (jobDate < oneYearAgo) {
+        console.log(
+          `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
+        );
+        await RetryHandler.withRetry(async () => {
+          await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+        });
+        batchDeletedJobs++;
+        continue;
+      }
 
-        // Check if job is older than 1 year
-        if (jobDate < oneYearAgo) {
-          console.log(
-            `🗑️ Deleting old job: ${existingJob.UUID} (${existingJob.JobDateTime})`
-          );
-          await RetryHandler.withRetry(async () => {
-            await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
-          });
-          batchDeletedJobs++;
-          continue;
-        }
+      // Update job using Workiz API
+      const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
 
-        // Update job using Workiz API
-        const updateUrl = `https://api.workiz.com/api/v1/${account.workizApiToken}/job/get/${existingJob.UUID}/`;
+      const updateResponse = await RetryHandler.withRetry(
+        async () => {
+          const resp = await APIManager.fetchWithTimeout(updateUrl, {}, 30000);
 
-        const updateResponse = await RetryHandler.withRetry(
-          async () => {
-            const resp = await APIManager.fetchWithTimeout(
-              updateUrl,
-              {},
-              30000
-            );
+          if (!resp.ok) {
+            const errorText = await resp.text();
+            console.log(`❌ Job update error: ${resp.status} - ${errorText}`);
 
-            if (!resp.ok) {
-              const errorText = await resp.text();
-              console.log(`❌ Job update error: ${resp.status} - ${errorText}`);
-
-              if (
-                errorText.includes('<div class="text-container">') ||
-                errorText.includes("Oops!") ||
-                errorText.includes("Something went wrong")
-              ) {
-                throw new Error(
-                  `Workiz API 520 error - server is experiencing issues`
-                );
-              }
-
+            if (
+              errorText.includes('<div class="text-container">') ||
+              errorText.includes("Oops!") ||
+              errorText.includes("Something went wrong")
+            ) {
               throw new Error(
-                `Job update error: ${resp.status} - ${errorText}`
+                `Workiz API 520 error - server is experiencing issues`
               );
             }
 
-            return resp;
-          },
-          3,
-          1000,
-          workizCircuitBreaker
-        );
+            throw new Error(`Job update error: ${resp.status} - ${errorText}`);
+          }
 
-        const updateData = await updateResponse.json();
+          return resp;
+        },
+        3,
+        1000,
+        workizCircuitBreaker
+      );
 
-        if (updateData.flag && updateData.data && updateData.data.length > 0) {
-          const jobData = updateData.data[0];
-          const updatedJob = {
-            ...jobData,
-            accountId: account._id || account.id,
-          };
+      const updateData = await updateResponse.json();
 
-          await RetryHandler.withRetry(async () => {
-            await db
-              .collection("jobs")
-              .updateOne(
-                { UUID: existingJob.UUID },
-                { $set: updatedJob },
-                { upsert: true }
-              );
-          });
+      if (updateData.flag && updateData.data && updateData.data.length > 0) {
+        const jobData = updateData.data[0];
+        const updatedJob = {
+          ...jobData,
+          accountId: account._id || account.id,
+        };
 
-          batchUpdatedJobs++;
-        } else {
-          console.log(`⚠️ Job not found in Workiz API: ${existingJob.UUID}`);
-          await RetryHandler.withRetry(async () => {
-            await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
-          });
-          batchDeletedJobs++;
-        }
+        await RetryHandler.withRetry(async () => {
+          await db
+            .collection("jobs")
+            .updateOne(
+              { UUID: existingJob.UUID },
+              { $set: updatedJob },
+              { upsert: true }
+            );
+        });
 
-        // Add a delay between individual job updates (5000ms)
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      } catch (error) {
-        if (error.message.includes("Circuit breaker is OPEN")) {
-          console.log(
-            `🚨 Circuit breaker blocked job update for ${existingJob.UUID}`
-          );
-          continue;
-        }
-
-        console.log(
-          `❌ Error processing job ${existingJob.UUID}: ${error.message}`
-        );
-        batchFailedUpdates++;
+        batchUpdatedJobs++;
+      } else {
+        console.log(`⚠️ Job not found in Workiz API: ${existingJob.UUID}`);
+        await RetryHandler.withRetry(async () => {
+          await db.collection("jobs").deleteOne({ UUID: existingJob.UUID });
+        });
+        batchDeletedJobs++;
       }
-    }
 
-    // Update batch state with current batch results
-    const updatedStats = {
-      currentBatch: batchState.currentBatch + 1,
-      processedJobs: batchState.processedJobs + existingJobs.length,
-      updatedJobs: batchState.updatedJobs + batchUpdatedJobs,
-      deletedJobs: batchState.deletedJobs + batchDeletedJobs,
-      failedUpdates: batchState.failedUpdates + batchFailedUpdates,
-      lastBatchTime: new Date(),
+      // Add a delay between individual job updates (5000ms)
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    } catch (error) {
+      if (error.message.includes("Circuit breaker is OPEN")) {
+        console.log(
+          `🚨 Circuit breaker blocked job update for ${existingJob.UUID}`
+        );
+        continue;
+      }
+
+      console.log(
+        `❌ Error processing job ${existingJob.UUID}: ${error.message}`
+      );
+      batchFailedUpdates++;
+    }
+  }
+
+  // Update batch state with current batch results
+  const updatedStats = {
+    currentBatch: batchState.currentBatch + 1,
+    processedJobs: batchState.processedJobs + existingJobs.length,
+    updatedJobs: batchState.updatedJobs + batchUpdatedJobs,
+    deletedJobs: batchState.deletedJobs + batchDeletedJobs,
+    failedUpdates: batchState.failedUpdates + batchFailedUpdates,
+    lastBatchTime: new Date(),
+  };
+
+  await BatchProcessingManager.updateBatchState(db, accountId, updatedStats);
+
+  const batchDuration = Date.now() - batchStartTime;
+  console.log(
+    `📊 Batch ${
+      batchState.currentBatch + 1
+    } completed in ${batchDuration}ms: ${batchUpdatedJobs} updated, ${batchDeletedJobs} deleted, ${batchFailedUpdates} failed`
+  );
+
+  // Check if this was the last batch
+  if (updatedStats.currentBatch >= batchState.totalBatches) {
+    // Complete the batch processing
+    await BatchProcessingManager.completeBatchState(db, accountId, {
+      processedJobs: updatedStats.processedJobs,
+      updatedJobs: updatedStats.updatedJobs,
+      deletedJobs: updatedStats.deletedJobs,
+      failedUpdates: updatedStats.failedUpdates,
+    });
+
+    // Record sync history
+    const syncHistoryRecord = {
+      accountId: account._id || account.id,
+      syncType: "update-cleanup",
+      status: "success",
+      timestamp: new Date(),
+      duration: Date.now() - functionStartTime,
+      details: {
+        totalJobsProcessed: updatedStats.processedJobs,
+        jobsUpdated: updatedStats.updatedJobs,
+        jobsDeleted: updatedStats.deletedJobs,
+        failedUpdates: updatedStats.failedUpdates,
+        syncMethod: "hybrid-batch-continuation",
+        totalBatches: batchState.totalBatches,
+      },
     };
 
-    await BatchProcessingManager.updateBatchState(db, accountId, updatedStats);
+    await RetryHandler.withRetry(async () => {
+      await db.collection("syncHistory").insertOne(syncHistoryRecord);
+    });
 
-    const batchDuration = Date.now() - batchStartTime;
-    console.log(
-      `📊 Batch ${
-        batchState.currentBatch + 1
-      } completed in ${batchDuration}ms: ${batchUpdatedJobs} updated, ${batchDeletedJobs} deleted, ${batchFailedUpdates} failed`
-    );
+    // Update account's lastUpdateCleanupDate
+    await RetryHandler.withRetry(async () => {
+      await db
+        .collection("accounts")
+        .updateOne(
+          { _id: account._id || new ObjectId(account.id) },
+          { $set: { lastUpdateCleanupDate: new Date() } }
+        );
+    });
 
-    // Check if this was the last batch
-    if (updatedStats.currentBatch >= batchState.totalBatches) {
-      // Complete the batch processing
-      await BatchProcessingManager.completeBatchState(db, accountId, {
+    return {
+      message: `Job update and cleanup completed for account ${account.name}`,
+      details: {
+        totalJobsProcessed: updatedStats.processedJobs,
+        jobsUpdated: updatedStats.updatedJobs,
+        jobsDeleted: updatedStats.deletedJobs,
+        failedUpdates: updatedStats.failedUpdates,
+        duration: Date.now() - functionStartTime,
+        processingMethod: "hybrid-batch-continuation",
+        totalBatches: batchState.totalBatches,
+      },
+    };
+  }
+
+  // Always schedule next batch via cron (no more recursive calls)
+  const nextBatchTime = new Date(Date.now() + 5 * 60 * 1000);
+  await BatchProcessingManager.scheduleNextBatch(db, accountId, nextBatchTime);
+
+  console.log(
+    `⏰ Scheduled next batch for ${nextBatchTime.toISOString()} (cron scheduling)`
+  );
+
+  return {
+    message: `Batch ${
+      batchState.currentBatch + 1
+    } completed, next batch scheduled`,
+    details: {
+      currentBatch: batchState.currentBatch + 1,
+      totalBatches: batchState.totalBatches,
+      progress: `${Math.round(
+        ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
+      )}%`,
+      batchResults: {
+        jobsProcessed: existingJobs.length,
+        jobsUpdated: batchUpdatedJobs,
+        jobsDeleted: batchDeletedJobs,
+        failedUpdates: batchFailedUpdates,
+      },
+      totalProgress: {
         processedJobs: updatedStats.processedJobs,
         updatedJobs: updatedStats.updatedJobs,
         deletedJobs: updatedStats.deletedJobs,
         failedUpdates: updatedStats.failedUpdates,
-      });
-
-      // Record sync history
-      const syncHistoryRecord = {
-        accountId: account._id || account.id,
-        syncType: "update-cleanup",
-        status: "success",
-        timestamp: new Date(),
-        duration: Date.now() - functionStartTime,
-        details: {
-          totalJobsProcessed: updatedStats.processedJobs,
-          jobsUpdated: updatedStats.updatedJobs,
-          jobsDeleted: updatedStats.deletedJobs,
-          failedUpdates: updatedStats.failedUpdates,
-          syncMethod: "hybrid-batch-continuation",
-          totalBatches: batchState.totalBatches,
-        },
-      };
-
-      await RetryHandler.withRetry(async () => {
-        await db.collection("syncHistory").insertOne(syncHistoryRecord);
-      });
-
-      // Update account's lastUpdateCleanupDate
-      await RetryHandler.withRetry(async () => {
-        await db
-          .collection("accounts")
-          .updateOne(
-            { _id: account._id || new ObjectId(account.id) },
-            { $set: { lastUpdateCleanupDate: new Date() } }
-          );
-      });
-
-      return res.json({
-        message: `Job update and cleanup completed for account ${account.name}`,
-        details: {
-          totalJobsProcessed: updatedStats.processedJobs,
-          jobsUpdated: updatedStats.updatedJobs,
-          jobsDeleted: updatedStats.deletedJobs,
-          failedUpdates: updatedStats.failedUpdates,
-          duration: Date.now() - functionStartTime,
-          processingMethod: "hybrid-batch-continuation",
-          totalBatches: batchState.totalBatches,
-        },
-      });
-    }
-
-    // Always schedule next batch via cron (no more recursive calls)
-    const nextBatchTime = new Date(Date.now() + 5 * 60 * 1000);
-    await BatchProcessingManager.scheduleNextBatch(
-      db,
-      accountId,
-      nextBatchTime
-    );
-
-    console.log(
-      `⏰ Scheduled next batch for ${nextBatchTime.toISOString()} (cron scheduling)`
-    );
-
-    return res.json({
-      message: `Batch ${
-        batchState.currentBatch + 1
-      } completed, next batch scheduled`,
-      details: {
-        currentBatch: batchState.currentBatch + 1,
-        totalBatches: batchState.totalBatches,
-        progress: `${Math.round(
-          ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
-        )}%`,
-        batchResults: {
-          jobsProcessed: existingJobs.length,
-          jobsUpdated: batchUpdatedJobs,
-          jobsDeleted: batchDeletedJobs,
-          failedUpdates: batchFailedUpdates,
-        },
-        totalProgress: {
-          processedJobs: updatedStats.processedJobs,
-          updatedJobs: updatedStats.updatedJobs,
-          deletedJobs: updatedStats.deletedJobs,
-          failedUpdates: updatedStats.failedUpdates,
-        },
-        nextBatchTime: nextBatchTime.toISOString(),
-        processingMethod: "cron-scheduled",
-        duration: Date.now() - functionStartTime,
       },
-    });
+      nextBatchTime: nextBatchTime.toISOString(),
+      processingMethod: "cron-scheduled",
+      duration: Date.now() - functionStartTime,
+    },
+  };
+}
+
+// Continuation endpoint for batch processing (HTTP endpoint)
+app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
+  const functionStartTime = Date.now();
+
+  try {
+    const result = await processBatchContinuation(
+      req.params.accountId,
+      functionStartTime
+    );
+    res.json(result);
   } catch (error) {
     console.log(`❌ Continue batch processing error: ${error.message}`);
     console.log(`❌ Error stack: ${error.stack}`);
@@ -2139,6 +2132,7 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
     // Record failed sync history if we have account info
     if (req.params.accountId) {
       try {
+        const db = await ensureDbConnection();
         const syncHistoryRecord = {
           accountId: req.params.accountId,
           syncType: "update-cleanup",
@@ -3035,42 +3029,36 @@ app.get("/api/cron/continue-batch-processing", async (req, res) => {
 
         console.log(`✅ Account found: ${account.name}`);
 
-        // Call the continuation endpoint
-        const continuationUrl = `${req.protocol}://${req.get(
-          "host"
-        )}/api/continue-update-cleanup/${batchState.accountId}`;
+        // Directly call the continuation function instead of HTTP call
+        console.log(
+          `🔄 Directly calling continuation function for account: ${batchState.accountId}`
+        );
 
-        console.log(`🌐 Calling continuation endpoint: ${continuationUrl}`);
+        try {
+          // Import the continuation logic directly
+          const continuationResult = await processBatchContinuation(
+            batchState.accountId,
+            functionStartTime
+          );
 
-        const response = await fetch(continuationUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-
-        if (response.ok) {
-          const result = await response.json();
           results.push({
             accountId: batchState.accountId,
             success: true,
-            result: result,
+            result: continuationResult,
           });
           console.log(
             `✅ Successfully continued batch processing for account: ${batchState.accountId}`
           );
-        } else {
-          const errorText = await response.text();
+        } catch (continuationError) {
           console.log(
             `❌ Failed to continue batch processing for account: ${batchState.accountId}`
           );
-          console.log(`❌ HTTP Status: ${response.status}`);
-          console.log(`❌ Error Response: ${errorText}`);
+          console.log(`❌ Error: ${continuationError.message}`);
 
           results.push({
             accountId: batchState.accountId,
             success: false,
-            error: `HTTP ${response.status}: ${errorText}`,
+            error: continuationError.message,
           });
         }
       } catch (error) {
