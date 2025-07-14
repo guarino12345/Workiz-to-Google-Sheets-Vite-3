@@ -25,7 +25,9 @@ import {
   CloudDownload,
   CloudUpload,
   Refresh,
-  Update
+  Update,
+  Stop,
+  PlayArrow
 } from '@mui/icons-material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
@@ -98,6 +100,9 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [showSyncDetails, setShowSyncDetails] = useState(false);
+  const [batchStatus, setBatchStatus] = useState<any>(null);
+  const [stoppingBatch, setStoppingBatch] = useState(false);
+  const [resumingBatch, setResumingBatch] = useState(false);
 
   // Set initial selected account only once when component mounts
   useEffect(() => {
@@ -105,6 +110,27 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       setSelectedAccount(accounts[0]);
     }
   }, []);
+
+  // Check batch status periodically when there's an active batch
+  useEffect(() => {
+    if (!selectedAccount?.id) return;
+
+    const checkStatus = async () => {
+      await checkBatchStatus();
+    };
+
+    // Check immediately
+    checkStatus();
+
+    // Set up interval to check every 30 seconds if there's an active batch
+    const interval = setInterval(async () => {
+      if (batchStatus && ['running', 'paused'].includes(batchStatus.status)) {
+        await checkStatus();
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [selectedAccount?.id, batchStatus?.status]);
 
   // Fetch ALL jobs from DB when component mounts or accounts change
   useEffect(() => {
@@ -367,6 +393,88 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
     }
   };
 
+  const checkBatchStatus = async () => {
+    if (!selectedAccount?.id) return;
+    
+    try {
+      const response = await fetch(
+        buildApiUrl(`/api/batch-processing/status/${selectedAccount.id}`)
+      );
+      const data = await response.json();
+      setBatchStatus(data);
+    } catch (error) {
+      console.error('Error checking batch status:', error);
+    }
+  };
+
+  const handleStopBatch = async () => {
+    if (!selectedAccount?.id) return;
+    setStoppingBatch(true);
+    setError('');
+    
+    try {
+      const response = await fetch(
+        buildApiUrl(`/api/stop-update-cleanup/${selectedAccount.id}`),
+        { method: 'POST' }
+      );
+      const data = await response.json();
+      
+      if (!response.ok) {
+        setError(data.error || 'Failed to stop batch processing');
+        return;
+      }
+      
+      setBatchStatus(data.details);
+      setSyncResult({
+        success: true,
+        message: 'Batch processing stopped successfully',
+        details: data.details,
+        timestamp: new Date()
+      });
+      
+      console.log('Batch stopped successfully:', data);
+    } catch (err: unknown) {
+      console.error('Error stopping batch:', err);
+      setError(getErrorMessage(err));
+    } finally {
+      setStoppingBatch(false);
+    }
+  };
+
+  const handleResumeBatch = async () => {
+    if (!selectedAccount?.id) return;
+    setResumingBatch(true);
+    setError('');
+    
+    try {
+      const response = await fetch(
+        buildApiUrl(`/api/resume-update-cleanup/${selectedAccount.id}`),
+        { method: 'POST' }
+      );
+      const data = await response.json();
+      
+      if (!response.ok) {
+        setError(data.error || 'Failed to resume batch processing');
+        return;
+      }
+      
+      setBatchStatus(data.details);
+      setSyncResult({
+        success: true,
+        message: 'Batch processing resumed successfully',
+        details: data.details,
+        timestamp: new Date()
+      });
+      
+      console.log('Batch resumed successfully:', data);
+    } catch (err: unknown) {
+      console.error('Error resuming batch:', err);
+      setError(getErrorMessage(err));
+    } finally {
+      setResumingBatch(false);
+    }
+  };
+
   const handleUpdateAndCleanup = async () => {
     if (!selectedAccount?.id) return;
     setUpdatingAndCleaning(true);
@@ -410,6 +518,9 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
       
       console.log('Update and cleanup successful:', data);
       setRefreshSyncHistory(prev => prev + 1); // Trigger sync history refresh
+      
+      // Check batch status after starting
+      await checkBatchStatus();
       
       // Reload jobs
       const jobsResponse = await fetch(buildApiUrl('/api/jobs'));
@@ -701,6 +812,102 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
               </Button>
             )}
           </Box>
+
+          {/* Batch Processing Status */}
+          {batchStatus && batchStatus.status !== 'none' && (
+            <Card sx={{ mb: 2, border: '1px solid', borderColor: 'warning.main' }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 2 }}>
+                  <Update color="warning" />
+                  <Typography variant="h6" sx={{ ml: 1, flexGrow: 1 }}>
+                    Batch Processing Status
+                  </Typography>
+                  <Chip 
+                    label={batchStatus.status.toUpperCase()} 
+                    color={batchStatus.status === 'running' ? 'success' : batchStatus.status === 'stopped' ? 'error' : 'warning'}
+                    size="small"
+                  />
+                </Box>
+                
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" color="text.secondary" gutterBottom>
+                    Progress: {batchStatus.progress} ({batchStatus.currentBatch}/{batchStatus.totalBatches} batches)
+                  </Typography>
+                  <LinearProgress 
+                    variant="determinate" 
+                    value={parseInt(batchStatus.progress)} 
+                    color="warning"
+                    sx={{ height: 8, borderRadius: 4 }}
+                  />
+                </Box>
+
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mb: 2 }}>
+                  <Chip 
+                    label={`${batchStatus.stats?.updatedJobs || 0} updated`} 
+                    color="success" 
+                    size="small" 
+                  />
+                  <Chip 
+                    label={`${batchStatus.stats?.deletedJobs || 0} deleted`} 
+                    color="error" 
+                    size="small" 
+                  />
+                  <Chip 
+                    label={`${batchStatus.stats?.failedUpdates || 0} failed`} 
+                    color="error" 
+                    size="small" 
+                  />
+                  <Chip 
+                    label={`${batchStatus.processedJobs || 0}/${batchStatus.totalJobs || 0} jobs`} 
+                    color="info" 
+                    size="small" 
+                  />
+                </Box>
+
+                {batchStatus.timing?.nextBatchTime && (
+                  <Typography variant="body2" color="text.secondary" gutterBottom>
+                    Next batch: {new Date(batchStatus.timing.nextBatchTime).toLocaleString()}
+                  </Typography>
+                )}
+
+                <Box sx={{ display: 'flex', gap: 1 }}>
+                  {batchStatus.status === 'running' && (
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      onClick={handleStopBatch}
+                      disabled={stoppingBatch}
+                      startIcon={stoppingBatch ? <Refresh /> : <Stop />}
+                      size="small"
+                    >
+                      {stoppingBatch ? 'Stopping...' : 'Stop Batch'}
+                    </Button>
+                  )}
+                  {batchStatus.status === 'stopped' && (
+                    <Button
+                      variant="outlined"
+                      color="success"
+                      onClick={handleResumeBatch}
+                      disabled={resumingBatch}
+                      startIcon={resumingBatch ? <Refresh /> : <PlayArrow />}
+                      size="small"
+                    >
+                      {resumingBatch ? 'Resuming...' : 'Resume Batch'}
+                    </Button>
+                  )}
+                  <Button
+                    variant="outlined"
+                    color="info"
+                    onClick={checkBatchStatus}
+                    size="small"
+                  >
+                    Refresh Status
+                  </Button>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+
           {!selectedAccount.workizApiToken && (
             <Alert severity="warning">
               Please add a Workiz API token to the selected account to sync jobs.

@@ -67,6 +67,10 @@
     {
       "path": "/api/cron/sync-jobs/batch",
       "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/continue-batch-processing",
+      "schedule": "*/5 * * * *"
     }
   ],
   "env": {

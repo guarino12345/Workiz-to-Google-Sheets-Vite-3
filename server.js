@@ -178,6 +178,34 @@ class BatchProcessingManager {
     return result.modifiedCount > 0;
   }
 
+  static async stopBatchProcessing(db, accountId) {
+    const result = await db.collection("batchProcessing").updateOne(
+      { accountId: accountId },
+      {
+        $set: {
+          status: "stopped",
+          stopRequested: new Date(),
+          updatedAt: new Date(),
+        },
+      }
+    );
+    return result.modifiedCount > 0;
+  }
+
+  static async resumeBatchProcessing(db, accountId) {
+    const result = await db.collection("batchProcessing").updateOne(
+      { accountId: accountId },
+      {
+        $set: {
+          status: "running",
+          stopRequested: null,
+          updatedAt: new Date(),
+        },
+      }
+    );
+    return result.modifiedCount > 0;
+  }
+
   static calculateTimeoutBuffer(startTime, maxDuration = 700000) {
     // 700s buffer (11.67 minutes)
     const elapsed = Date.now() - startTime;
@@ -1249,114 +1277,45 @@ app.post("/api/update-cleanup-jobs/:accountId", async (req, res) => {
       });
     }
 
-    // Check if we should continue immediately or schedule for later
-    const remainingTime =
-      BatchProcessingManager.calculateTimeoutBuffer(functionStartTime);
-    const estimatedNextBatchTime = batchDuration * 1.5; // Estimate next batch will take 1.5x current batch time
+    // Always schedule next batch via cron (no more recursive calls)
+    const nextBatchTime = new Date(Date.now() + 5 * 60 * 1000);
+    await BatchProcessingManager.scheduleNextBatch(
+      db,
+      accountId,
+      nextBatchTime
+    );
 
-    if (
-      BatchProcessingManager.shouldUseCronScheduling(
-        remainingTime,
-        estimatedNextBatchTime
-      )
-    ) {
-      // Schedule next batch via cron (5 minutes from now)
-      const nextBatchTime = new Date(Date.now() + 5 * 60 * 1000);
-      await BatchProcessingManager.scheduleNextBatch(
-        db,
-        accountId,
-        nextBatchTime
-      );
+    console.log(
+      `⏰ Scheduled next batch for ${nextBatchTime.toISOString()} (cron scheduling)`
+    );
 
-      console.log(
-        `⏰ Scheduled next batch for ${nextBatchTime.toISOString()} (cron scheduling)`
-      );
-
-      return res.json({
-        message: `Batch ${
-          batchState.currentBatch + 1
-        } completed, next batch scheduled`,
-        details: {
-          currentBatch: batchState.currentBatch + 1,
-          totalBatches: batchState.totalBatches,
-          progress: `${Math.round(
-            ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
-          )}%`,
-          batchResults: {
-            jobsProcessed: existingJobs.length,
-            jobsUpdated: batchUpdatedJobs,
-            jobsDeleted: batchDeletedJobs,
-            failedUpdates: batchFailedUpdates,
-          },
-          totalProgress: {
-            processedJobs: updatedStats.processedJobs,
-            updatedJobs: updatedStats.updatedJobs,
-            deletedJobs: updatedStats.deletedJobs,
-            failedUpdates: updatedStats.failedUpdates,
-          },
-          nextBatchTime: nextBatchTime.toISOString(),
-          processingMethod: "hybrid-batch-cron",
-          duration: Date.now() - functionStartTime,
+    return res.json({
+      message: `Batch ${
+        batchState.currentBatch + 1
+      } completed, next batch scheduled`,
+      details: {
+        currentBatch: batchState.currentBatch + 1,
+        totalBatches: batchState.totalBatches,
+        progress: `${Math.round(
+          ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
+        )}%`,
+        batchResults: {
+          jobsProcessed: existingJobs.length,
+          jobsUpdated: batchUpdatedJobs,
+          jobsDeleted: batchDeletedJobs,
+          failedUpdates: batchFailedUpdates,
         },
-      });
-    } else {
-      // Continue with next batch immediately
-      console.log(
-        `⏳ Continuing with next batch immediately (${remainingTime}ms remaining)`
-      );
-
-      // Add delay between batches (60 seconds)
-      await new Promise((resolve) => setTimeout(resolve, 60000));
-
-      // Recursively call the next batch
-      const nextBatchResponse = await fetch(
-        `${req.protocol}://${req.get(
-          "host"
-        )}/api/continue-update-cleanup/${accountId}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      if (!nextBatchResponse.ok) {
-        throw new Error(
-          `Failed to continue batch processing: ${nextBatchResponse.status}`
-        );
-      }
-
-      const nextBatchResult = await nextBatchResponse.json();
-
-      return res.json({
-        message: `Batch ${
-          batchState.currentBatch + 1
-        } completed, continuing immediately`,
-        details: {
-          currentBatch: batchState.currentBatch + 1,
-          totalBatches: batchState.totalBatches,
-          progress: `${Math.round(
-            ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
-          )}%`,
-          batchResults: {
-            jobsProcessed: existingJobs.length,
-            jobsUpdated: batchUpdatedJobs,
-            jobsDeleted: batchDeletedJobs,
-            failedUpdates: batchFailedUpdates,
-          },
-          totalProgress: {
-            processedJobs: updatedStats.processedJobs,
-            updatedJobs: updatedStats.updatedJobs,
-            deletedJobs: updatedStats.deletedJobs,
-            failedUpdates: updatedStats.failedUpdates,
-          },
-          processingMethod: "hybrid-batch-immediate",
-          duration: Date.now() - functionStartTime,
-          nextBatchResult: nextBatchResult,
+        totalProgress: {
+          processedJobs: updatedStats.processedJobs,
+          updatedJobs: updatedStats.updatedJobs,
+          deletedJobs: updatedStats.deletedJobs,
+          failedUpdates: updatedStats.failedUpdates,
         },
-      });
-    }
+        nextBatchTime: nextBatchTime.toISOString(),
+        processingMethod: "cron-scheduled",
+        duration: Date.now() - functionStartTime,
+      },
+    });
   } catch (error) {
     console.log(`❌ Update and cleanup error: ${error.message}`);
 
@@ -2133,114 +2092,45 @@ app.post("/api/continue-update-cleanup/:accountId", async (req, res) => {
       });
     }
 
-    // Check if we should continue immediately or schedule for later
-    const remainingTime =
-      BatchProcessingManager.calculateTimeoutBuffer(functionStartTime);
-    const estimatedNextBatchTime = batchDuration * 1.5;
+    // Always schedule next batch via cron (no more recursive calls)
+    const nextBatchTime = new Date(Date.now() + 5 * 60 * 1000);
+    await BatchProcessingManager.scheduleNextBatch(
+      db,
+      accountId,
+      nextBatchTime
+    );
 
-    if (
-      BatchProcessingManager.shouldUseCronScheduling(
-        remainingTime,
-        estimatedNextBatchTime
-      )
-    ) {
-      // Schedule next batch via cron (5 minutes from now)
-      const nextBatchTime = new Date(Date.now() + 5 * 60 * 1000);
-      await BatchProcessingManager.scheduleNextBatch(
-        db,
-        accountId,
-        nextBatchTime
-      );
+    console.log(
+      `⏰ Scheduled next batch for ${nextBatchTime.toISOString()} (cron scheduling)`
+    );
 
-      console.log(
-        `⏰ Scheduled next batch for ${nextBatchTime.toISOString()} (cron scheduling)`
-      );
-
-      return res.json({
-        message: `Batch ${
-          batchState.currentBatch + 1
-        } completed, next batch scheduled`,
-        details: {
-          currentBatch: batchState.currentBatch + 1,
-          totalBatches: batchState.totalBatches,
-          progress: `${Math.round(
-            ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
-          )}%`,
-          batchResults: {
-            jobsProcessed: existingJobs.length,
-            jobsUpdated: batchUpdatedJobs,
-            jobsDeleted: batchDeletedJobs,
-            failedUpdates: batchFailedUpdates,
-          },
-          totalProgress: {
-            processedJobs: updatedStats.processedJobs,
-            updatedJobs: updatedStats.updatedJobs,
-            deletedJobs: updatedStats.deletedJobs,
-            failedUpdates: updatedStats.failedUpdates,
-          },
-          nextBatchTime: nextBatchTime.toISOString(),
-          processingMethod: "hybrid-batch-cron",
-          duration: Date.now() - functionStartTime,
+    return res.json({
+      message: `Batch ${
+        batchState.currentBatch + 1
+      } completed, next batch scheduled`,
+      details: {
+        currentBatch: batchState.currentBatch + 1,
+        totalBatches: batchState.totalBatches,
+        progress: `${Math.round(
+          ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
+        )}%`,
+        batchResults: {
+          jobsProcessed: existingJobs.length,
+          jobsUpdated: batchUpdatedJobs,
+          jobsDeleted: batchDeletedJobs,
+          failedUpdates: batchFailedUpdates,
         },
-      });
-    } else {
-      // Continue with next batch immediately
-      console.log(
-        `⏳ Continuing with next batch immediately (${remainingTime}ms remaining)`
-      );
-
-      // Add delay between batches (60 seconds)
-      await new Promise((resolve) => setTimeout(resolve, 60000));
-
-      // Recursively call the next batch
-      const nextBatchResponse = await fetch(
-        `${req.protocol}://${req.get(
-          "host"
-        )}/api/continue-update-cleanup/${accountId}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      if (!nextBatchResponse.ok) {
-        throw new Error(
-          `Failed to continue batch processing: ${nextBatchResponse.status}`
-        );
-      }
-
-      const nextBatchResult = await nextBatchResponse.json();
-
-      return res.json({
-        message: `Batch ${
-          batchState.currentBatch + 1
-        } completed, continuing immediately`,
-        details: {
-          currentBatch: batchState.currentBatch + 1,
-          totalBatches: batchState.totalBatches,
-          progress: `${Math.round(
-            ((batchState.currentBatch + 1) / batchState.totalBatches) * 100
-          )}%`,
-          batchResults: {
-            jobsProcessed: existingJobs.length,
-            jobsUpdated: batchUpdatedJobs,
-            jobsDeleted: batchDeletedJobs,
-            failedUpdates: batchFailedUpdates,
-          },
-          totalProgress: {
-            processedJobs: updatedStats.processedJobs,
-            updatedJobs: updatedStats.updatedJobs,
-            deletedJobs: updatedStats.deletedJobs,
-            failedUpdates: updatedStats.failedUpdates,
-          },
-          processingMethod: "hybrid-batch-immediate",
-          duration: Date.now() - functionStartTime,
-          nextBatchResult: nextBatchResult,
+        totalProgress: {
+          processedJobs: updatedStats.processedJobs,
+          updatedJobs: updatedStats.updatedJobs,
+          deletedJobs: updatedStats.deletedJobs,
+          failedUpdates: updatedStats.failedUpdates,
         },
-      });
-    }
+        nextBatchTime: nextBatchTime.toISOString(),
+        processingMethod: "cron-scheduled",
+        duration: Date.now() - functionStartTime,
+      },
+    });
   } catch (error) {
     console.log(`❌ Continue batch processing error: ${error.message}`);
 
@@ -3071,6 +2961,7 @@ app.get("/api/cron/continue-batch-processing", async (req, res) => {
       .find({
         status: "paused",
         nextBatchTime: { $lte: now },
+        stopRequested: { $exists: false }, // Skip if stop was requested
       })
       .toArray();
 
@@ -3722,6 +3613,183 @@ app.get("/api/batch-processing/status/:accountId", async (req, res) => {
     res.json(status);
   } catch (error) {
     console.error("Error getting batch processing status:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Stop batch processing endpoint
+app.post("/api/stop-update-cleanup/:accountId", async (req, res) => {
+  try {
+    const db = await ensureDbConnection();
+    const { accountId } = req.params;
+
+    // Find account by ID - try both id and _id fields
+    const account = await db.collection("accounts").findOne({
+      $or: [{ _id: new ObjectId(accountId) }, { id: accountId }],
+    });
+
+    if (!account) {
+      return res.status(404).json({ error: "Account not found" });
+    }
+
+    // Get current batch processing state
+    const batchState = await BatchProcessingManager.getBatchState(
+      db,
+      accountId
+    );
+
+    if (!batchState) {
+      return res.status(404).json({
+        error: "No active batch processing found for this account",
+      });
+    }
+
+    // Stop the batch processing
+    const stopped = await BatchProcessingManager.stopBatchProcessing(
+      db,
+      accountId
+    );
+
+    if (!stopped) {
+      return res.status(500).json({
+        error: "Failed to stop batch processing",
+      });
+    }
+
+    console.log(`⏹️ Batch processing stopped for account: ${account.name}`);
+
+    // Record stop action in sync history
+    const syncHistoryRecord = {
+      accountId: account._id || account.id,
+      syncType: "update-cleanup",
+      status: "stopped",
+      timestamp: new Date(),
+      details: {
+        currentBatch: batchState.currentBatch,
+        totalBatches: batchState.totalBatches,
+        processedJobs: batchState.processedJobs,
+        updatedJobs: batchState.updatedJobs,
+        deletedJobs: batchState.deletedJobs,
+        failedUpdates: batchState.failedUpdates,
+        stopReason: "user_requested",
+      },
+    };
+
+    await RetryHandler.withRetry(async () => {
+      await db.collection("syncHistory").insertOne(syncHistoryRecord);
+    });
+
+    res.json({
+      message: `Batch processing stopped for account ${account.name}`,
+      details: {
+        status: "stopped",
+        currentBatch: batchState.currentBatch,
+        totalBatches: batchState.totalBatches,
+        progress: `${Math.round(
+          (batchState.currentBatch / batchState.totalBatches) * 100
+        )}%`,
+        processedJobs: batchState.processedJobs,
+        updatedJobs: batchState.updatedJobs,
+        deletedJobs: batchState.deletedJobs,
+        failedUpdates: batchState.failedUpdates,
+        stoppedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error("Error stopping batch processing:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Resume batch processing endpoint
+app.post("/api/resume-update-cleanup/:accountId", async (req, res) => {
+  try {
+    const db = await ensureDbConnection();
+    const { accountId } = req.params;
+
+    // Find account by ID - try both id and _id fields
+    const account = await db.collection("accounts").findOne({
+      $or: [{ _id: new ObjectId(accountId) }, { id: accountId }],
+    });
+
+    if (!account) {
+      return res.status(404).json({ error: "Account not found" });
+    }
+
+    // Get current batch processing state
+    const batchState = await db.collection("batchProcessing").findOne({
+      accountId: accountId,
+      status: "stopped",
+    });
+
+    if (!batchState) {
+      return res.status(404).json({
+        error: "No stopped batch processing found for this account",
+      });
+    }
+
+    // Resume the batch processing
+    const resumed = await BatchProcessingManager.resumeBatchProcessing(
+      db,
+      accountId
+    );
+
+    if (!resumed) {
+      return res.status(500).json({
+        error: "Failed to resume batch processing",
+      });
+    }
+
+    console.log(`▶️ Batch processing resumed for account: ${account.name}`);
+
+    // Schedule next batch to run immediately (5 minutes from now)
+    const nextBatchTime = new Date(Date.now() + 5 * 60 * 1000);
+    await BatchProcessingManager.scheduleNextBatch(
+      db,
+      accountId,
+      nextBatchTime
+    );
+
+    // Record resume action in sync history
+    const syncHistoryRecord = {
+      accountId: account._id || account.id,
+      syncType: "update-cleanup",
+      status: "resumed",
+      timestamp: new Date(),
+      details: {
+        currentBatch: batchState.currentBatch,
+        totalBatches: batchState.totalBatches,
+        processedJobs: batchState.processedJobs,
+        updatedJobs: batchState.updatedJobs,
+        deletedJobs: batchState.deletedJobs,
+        failedUpdates: batchState.failedUpdates,
+        nextBatchTime: nextBatchTime,
+      },
+    };
+
+    await RetryHandler.withRetry(async () => {
+      await db.collection("syncHistory").insertOne(syncHistoryRecord);
+    });
+
+    res.json({
+      message: `Batch processing resumed for account ${account.name}`,
+      details: {
+        status: "running",
+        currentBatch: batchState.currentBatch,
+        totalBatches: batchState.totalBatches,
+        progress: `${Math.round(
+          (batchState.currentBatch / batchState.totalBatches) * 100
+        )}%`,
+        processedJobs: batchState.processedJobs,
+        updatedJobs: batchState.updatedJobs,
+        deletedJobs: batchState.deletedJobs,
+        failedUpdates: batchState.failedUpdates,
+        nextBatchTime: nextBatchTime.toISOString(),
+        resumedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    console.error("Error resuming batch processing:", error);
     res.status(500).json({ error: error.message });
   }
 });
