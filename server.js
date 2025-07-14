@@ -665,13 +665,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
       accountId: account._id || account.id,
     }));
 
-    console.log(
-      `🏷️ Added accountId to jobs. Sample job UUIDs: ${allJobs
-        .slice(0, 3)
-        .map((j) => j.UUID)
-        .join(", ")}`
-    );
-
     // Filter jobs by sourceFilter if configured
     let filteredJobs = allJobs;
     if (
@@ -683,16 +676,7 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
         account.sourceFilter.includes(job.JobSource)
       );
       console.log(
-        `🔍 Filtered jobs by sourceFilter: ${allJobs.length} → ${filteredJobs.length} jobs`
-      );
-      console.log(
-        `📋 Job sources found: ${[
-          ...new Set(filteredJobs.map((job) => job.JobSource)),
-        ].join(", ")}`
-      );
-    } else {
-      console.log(
-        `⚠️ No sourceFilter configured, using all ${allJobs.length} jobs`
+        `🔍 Source filtering: ${allJobs.length} → ${filteredJobs.length} jobs`
       );
     }
 
@@ -702,10 +686,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
       account.whatconvertsApiSecret &&
       filteredJobs.length > 0
     ) {
-      console.log(
-        `🔍 WhatConverts API credentials found, checking phone numbers...`
-      );
-
       // Extract unique phone numbers from filtered jobs
       const phoneNumbers = [
         ...new Set(
@@ -714,10 +694,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
             .filter((phone) => phone && phone.trim() !== "")
         ),
       ];
-
-      console.log(
-        `📞 Checking ${phoneNumbers.length} unique phone numbers in WhatConverts`
-      );
 
       // Check phones in WhatConverts
       const whatconvertsResults =
@@ -733,24 +709,15 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
 
       filteredJobs = filteredJobs.filter((job) => {
         if (!job.Phone || job.Phone.trim() === "") {
-          console.log(
-            `⚠️ Job ${job.UUID} has no phone number, excluding from WhatConverts filter`
-          );
           return false;
         }
 
         const leadData = whatconvertsResults[job.Phone];
         if (!leadData || !leadData.exists) {
-          console.log(
-            `⚠️ Job ${job.UUID} phone ${job.Phone} not found in WhatConverts`
-          );
           return false;
         }
 
         if (!leadData.hasGclid) {
-          console.log(
-            `⚠️ Job ${job.UUID} phone ${job.Phone} found in WhatConverts but no gclid present`
-          );
           return false;
         }
 
@@ -759,22 +726,15 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
         job.whatconvertsDateCreated = leadData.dateCreated;
         jobsWithGclid++;
 
-        console.log(
-          `✅ Job ${job.UUID} phone ${job.Phone} passed WhatConverts filter with gclid: ${leadData.gclid}`
-        );
         return true;
       });
 
       console.log(
-        `🔍 Filtered jobs by WhatConverts: ${beforeWhatconvertsCount} → ${filteredJobs.length} jobs (${jobsWithGclid} with gclid)`
+        `🔍 WhatConverts filtering: ${beforeWhatconvertsCount} → ${filteredJobs.length} jobs (${jobsWithGclid} with gclid)`
       );
     } else if (account.whatconvertsApiKey || account.whatconvertsApiSecret) {
       console.log(
         `⚠️ WhatConverts API credentials incomplete - both key and secret required`
-      );
-    } else {
-      console.log(
-        `⚠️ No WhatConverts API credentials configured, skipping phone validation`
       );
     }
 
@@ -797,10 +757,6 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
     const existingJobCount = await db.collection("jobs").countDocuments({
       UUID: { $in: filteredJobs.map((job) => job.UUID) },
     });
-    console.log(
-      `🔍 Found ${existingJobCount} existing jobs with matching UUIDs`
-    );
-
     // Upsert filtered jobs into MongoDB
     const bulkOps = filteredJobs.map((job) => ({
       updateOne: {
@@ -810,23 +766,17 @@ app.post("/api/sync-jobs/:accountId", async (req, res) => {
       },
     }));
 
-    console.log(`💾 Executing bulk write with ${bulkOps.length} operations`);
-
     if (bulkOps.length > 0) {
       const bulkResult = await db.collection("jobs").bulkWrite(bulkOps);
-      console.log(`✅ Bulk write completed:`, {
-        matchedCount: bulkResult.matchedCount,
-        modifiedCount: bulkResult.modifiedCount,
-        upsertedCount: bulkResult.upsertedCount,
-        insertedCount: bulkResult.insertedCount,
-      });
+      console.log(
+        `✅ Sync completed: ${filteredJobs.length} jobs processed (${bulkResult.upsertedCount} new, ${bulkResult.modifiedCount} updated)`
+      );
     }
 
     // Verify final count
     const finalJobCount = await db.collection("jobs").countDocuments({
       accountId: account._id || account.id,
     });
-    console.log(`📈 Final job count for account: ${finalJobCount}`);
 
     // Record sync history
     const syncHistoryRecord = {
