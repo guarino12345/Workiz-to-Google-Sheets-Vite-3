@@ -2952,6 +2952,7 @@ app.get("/api/cron/continue-batch-processing", async (req, res) => {
       });
     }
 
+    const functionStartTime = Date.now();
     console.log(
       `🕐 Vercel Cron Job for batch continuation triggered at: ${new Date().toISOString()}`
     );
