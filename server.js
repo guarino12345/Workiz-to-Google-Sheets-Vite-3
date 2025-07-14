@@ -1487,48 +1487,113 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
       );
     }
 
-    // Clear the entire sheet and set headers
-    console.log(`🧹 Clearing entire sheet and setting headers...`);
-    try {
-      await RetryHandler.withRetry(
-        async () => {
-          // Clear the entire sheet
-          await sheets.spreadsheets.values.clear({
-            spreadsheetId: account.googleSheetsId,
-            range: "Sheet1!A:F",
-          });
+    // Determine current format type
+    const currentFormat = hasWhatConverts ? "whatconverts" : "standard";
 
-          // Set the appropriate headers
-          await sheets.spreadsheets.values.update({
-            spreadsheetId: account.googleSheetsId,
-            range: "Sheet1!A1",
-            valueInputOption: "USER_ENTERED",
-            requestBody: {
-              values: headers,
-            },
-          });
-        },
-        3,
-        1000,
-        sheetsCircuitBreaker
+    // Check if this is first time sync (no lastSheetsFormat field)
+    const isFirstTimeSync = !account.lastSheetsFormat;
+
+    // Check if we need to clear the sheet (format change only)
+    // For existing accounts without lastSheetsFormat, we'll initialize it without clearing
+    const shouldClearSheet =
+      account.lastSheetsFormat && account.lastSheetsFormat !== currentFormat;
+
+    if (shouldClearSheet) {
+      console.log(
+        `🧹 Clearing sheet - format change detected: ${account.lastSheetsFormat} → ${currentFormat}`
       );
-      console.log(`✅ Sheet cleared and headers set successfully`);
-    } catch (error) {
-      console.log(`❌ Error clearing/setting sheet: ${error.message}`);
-      return res.status(500).json({
-        error: "Failed to clear/set Google Sheet",
-        details: error.message,
-      });
+      try {
+        await RetryHandler.withRetry(
+          async () => {
+            // Clear the entire sheet
+            await sheets.spreadsheets.values.clear({
+              spreadsheetId: account.googleSheetsId,
+              range: "Sheet1!A:F",
+            });
+
+            // Set the appropriate headers
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: account.googleSheetsId,
+              range: "Sheet1!A1",
+              valueInputOption: "USER_ENTERED",
+              requestBody: {
+                values: headers,
+              },
+            });
+          },
+          3,
+          1000,
+          sheetsCircuitBreaker
+        );
+        console.log(`✅ Sheet cleared and headers set successfully`);
+      } catch (error) {
+        console.log(`❌ Error clearing/setting sheet: ${error.message}`);
+        return res.status(500).json({
+          error: "Failed to clear/set Google Sheet",
+          details: error.message,
+        });
+      }
+    } else if (isFirstTimeSync) {
+      console.log(
+        `🆕 First time sync - initializing format tracking without clearing sheet`
+      );
+    } else {
+      console.log(`📋 Using existing sheet data - no clearing needed`);
     }
 
-    // Prepare data for Google Sheets based on account type
-    console.log(
-      `📝 Preparing ${filteredJobs.length} jobs for Google Sheets (${
-        hasWhatConverts ? "WhatConverts" : "Standard"
-      } format)...`
-    );
+    // Smart row matching and updating logic
+    console.log(`🔍 Starting smart row matching and updating...`);
 
-    const values = filteredJobs.map((job, index) => {
+    let updatedRows = 0;
+    let newRows = 0;
+    let skippedRows = 0;
+
+    // Read existing sheet data if not clearing
+    let existingData = [];
+    let existingLookup = new Map();
+
+    if (!shouldClearSheet) {
+      try {
+        const existingResponse = await RetryHandler.withRetry(
+          async () => {
+            return await sheets.spreadsheets.values.get({
+              spreadsheetId: account.googleSheetsId,
+              range: "Sheet1!A:F",
+            });
+          },
+          3,
+          1000,
+          sheetsCircuitBreaker
+        );
+
+        existingData = existingResponse.data.values || [];
+        console.log(`📋 Found ${existingData.length} existing rows in sheet`);
+
+        // Create lookup map for existing data (skip header row)
+        if (existingData.length > 1) {
+          for (let i = 1; i < existingData.length; i++) {
+            const row = existingData[i];
+            const key = row[0]; // First column (gclid or phone number)
+            if (key) {
+              existingLookup.set(key, i + 1); // +1 because sheet rows are 1-indexed
+            }
+          }
+          console.log(
+            `🔍 Created lookup map with ${existingLookup.size} entries`
+          );
+        }
+      } catch (error) {
+        console.log(`⚠️ Error reading existing data: ${error.message}`);
+        // Continue with empty lookup - will treat all as new rows
+      }
+    }
+
+    // Process each job for smart updating
+    const batchSize = 100;
+    const updateBatches = [];
+    const appendBatches = [];
+
+    for (const job of filteredJobs) {
       const formattedTime =
         formatInTimeZone(
           new Date(job.JobDateTime),
@@ -1538,13 +1603,9 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
 
       // Conversion value logic
       let conversionValue = account.defaultConversionValue || 0;
-
-      // If JobTotalPrice has a value and is not 0, use it
       if (job.JobTotalPrice && job.JobTotalPrice !== 0) {
         conversionValue = job.JobTotalPrice;
       }
-
-      // If Status is cancelled (case-insensitive), set to 0
       if (
         job.Status &&
         ["Cancelled", "Canceled", "cancelled", "CANCELLED"].includes(job.Status)
@@ -1552,67 +1613,109 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         conversionValue = 0;
       }
 
-      if (index < 3) {
-        if (hasWhatConverts) {
-          console.log(
-            `📋 Sample job ${index + 1}: ${job.gclid} | ${formattedTime} | ${
-              job.JobSource
-            }`
-          );
-        } else {
-          console.log(
-            `📋 Sample job ${index + 1}: ${job.Phone} | ${formattedTime} | ${
-              job.JobSource
-            }`
-          );
-        }
-      }
+      // Create row data based on format
+      let rowData;
+      let matchKey;
 
-      // Return different formats based on account type
       if (hasWhatConverts) {
-        // WhatConverts format: 5 columns
-        return [
+        rowData = [
           job.gclid || "", // Google Click ID
           "Google Ads Convert", // Conversion Name
-          formattedTime, // Conversion Time (using JobDateTime)
+          formattedTime, // Conversion Time
           conversionValue, // Conversion Value
           "USD", // Conversion Currency
         ];
+        matchKey = job.gclid;
       } else {
-        // Standard format: 6 columns
-        return [
+        rowData = [
           job.Phone || "", // Phone Number
           formattedTime, // Call Start Time
           "Google Ads Convert", // Conversion Name
-          formattedTime, // Conversion Time (using JobDateTime)
+          formattedTime, // Conversion Time
           conversionValue, // Conversion Value
           "USD", // Conversion Currency
         ];
+        matchKey = job.Phone;
       }
-    });
 
-    console.log(`📊 Prepared ${values.length} rows for Google Sheets`);
-
-    // Add to Google Sheet (starting from row 2 after headers)
-    console.log(`📤 Adding data to Google Sheet (starting from row 2)...`);
-    const response = await RetryHandler.withRetry(
-      async () => {
-        return await sheets.spreadsheets.values.append({
-          spreadsheetId: account.googleSheetsId,
-          range: `Sheet1!A2:${String.fromCharCode(65 + columnCount - 1)}2`, // Dynamic range based on column count
-          valueInputOption: "USER_ENTERED",
-          requestBody: {
-            values,
-          },
+      // Check if row exists
+      if (matchKey && existingLookup.has(matchKey)) {
+        // Update existing row
+        const rowNumber = existingLookup.get(matchKey);
+        updateBatches.push({
+          range: `Sheet1!A${rowNumber}:${String.fromCharCode(
+            65 + columnCount - 1
+          )}${rowNumber}`,
+          values: [rowData],
         });
-      },
-      3,
-      1000,
-      sheetsCircuitBreaker
+        updatedRows++;
+      } else if (matchKey) {
+        // Add new row
+        appendBatches.push(rowData);
+        newRows++;
+      } else {
+        // Skip rows without match key
+        skippedRows++;
+      }
+    }
+
+    console.log(
+      `📊 Processing summary: ${updatedRows} updates, ${newRows} new rows, ${skippedRows} skipped`
     );
 
+    // Execute updates in batches
+    if (updateBatches.length > 0) {
+      console.log(`🔄 Updating ${updateBatches.length} existing rows...`);
+      for (let i = 0; i < updateBatches.length; i += batchSize) {
+        const batch = updateBatches.slice(i, i + batchSize);
+        await RetryHandler.withRetry(
+          async () => {
+            const batchUpdate = {
+              spreadsheetId: account.googleSheetsId,
+              requestBody: {
+                valueInputOption: "USER_ENTERED",
+                data: batch,
+              },
+            };
+            return await sheets.spreadsheets.values.batchUpdate(batchUpdate);
+          },
+          3,
+          1000,
+          sheetsCircuitBreaker
+        );
+      }
+      console.log(`✅ Updated ${updateBatches.length} existing rows`);
+    }
+
+    // Execute appends in batches
+    if (appendBatches.length > 0) {
+      console.log(`📤 Appending ${appendBatches.length} new rows...`);
+      for (let i = 0; i < appendBatches.length; i += batchSize) {
+        const batch = appendBatches.slice(i, i + batchSize);
+        await RetryHandler.withRetry(
+          async () => {
+            return await sheets.spreadsheets.values.append({
+              spreadsheetId: account.googleSheetsId,
+              range: `Sheet1!A2:${String.fromCharCode(65 + columnCount - 1)}2`,
+              valueInputOption: "USER_ENTERED",
+              requestBody: {
+                values: batch,
+              },
+            });
+          },
+          3,
+          1000,
+          sheetsCircuitBreaker
+        );
+      }
+      console.log(`✅ Appended ${appendBatches.length} new rows`);
+    }
+
+    const totalProcessed = updatedRows + newRows;
     console.log(`✅ Google Sheets sync completed successfully`);
-    console.log(`📈 Updated rows: ${response.data.updates?.updatedRows || 0}`);
+    console.log(
+      `📈 Total processed: ${totalProcessed} rows (${updatedRows} updated, ${newRows} new)`
+    );
 
     // Record sync history
     const syncHistoryRecord = {
@@ -1624,7 +1727,10 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
       details: {
         totalJobs: allJobs.length,
         filteredJobs: filteredJobs.length,
-        updatedRows: response.data.updates?.updatedRows || 0,
+        updatedRows: updatedRows,
+        newRows: newRows,
+        skippedRows: skippedRows,
+        totalProcessed: totalProcessed,
         sourceFilter: account.sourceFilter,
         sampleJobSources: [
           ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
@@ -1632,6 +1738,10 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         syncMethod: "manual",
         formatType: hasWhatConverts ? "whatconverts" : "standard",
         columnCount: columnCount,
+        sheetCleared: shouldClearSheet,
+        isFirstTimeSync: isFirstTimeSync,
+        previousFormat: account.lastSheetsFormat,
+        currentFormat: currentFormat,
         whatconvertsStats: hasWhatConverts
           ? {
               jobsWithGclid: jobsWithGclid,
@@ -1662,10 +1772,6 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
               j.Status
             )
           ).length,
-          totalConversionValue: values.reduce(
-            (sum, row) => sum + (row[hasWhatConverts ? 3 : 4] || 0),
-            0
-          ),
         },
       },
     };
@@ -1680,29 +1786,48 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
     );
     console.log(`   - Total jobs: ${allJobs.length}`);
     console.log(`   - Filtered jobs: ${filteredJobs.length}`);
-    console.log(
-      `   - Updated rows: ${response.data.updates?.updatedRows || 0}`
-    );
+    console.log(`   - Updated rows: ${updatedRows}`);
+    console.log(`   - New rows: ${newRows}`);
+    console.log(`   - Skipped rows: ${skippedRows}`);
+    console.log(`   - Sheet cleared: ${shouldClearSheet ? "Yes" : "No"}`);
+    if (
+      account.lastSheetsFormat &&
+      account.lastSheetsFormat !== currentFormat
+    ) {
+      console.log(
+        `   - Format changed: ${account.lastSheetsFormat} → ${currentFormat}`
+      );
+    }
 
-    // Update account's lastSyncDate
+    // Update account's lastSyncDate and format tracking
     await RetryHandler.withRetry(async () => {
-      await db
-        .collection("accounts")
-        .updateOne(
-          { _id: account._id || new ObjectId(account.id) },
-          { $set: { lastSyncDate: new Date() } }
-        );
+      await db.collection("accounts").updateOne(
+        { _id: account._id || new ObjectId(account.id) },
+        {
+          $set: {
+            lastSyncDate: new Date(),
+            lastSheetsFormat: currentFormat,
+          },
+        }
+      );
     });
 
     res.json({
-      message: `Synced ${filteredJobs.length} jobs to Google Sheets for account ${account.name}`,
+      message: `Synced ${totalProcessed} jobs to Google Sheets for account ${account.name}`,
       details: {
         totalJobs: allJobs.length,
         filteredJobs: filteredJobs.length,
-        updatedRows: response.data.updates?.updatedRows || 0,
+        updatedRows: updatedRows,
+        newRows: newRows,
+        skippedRows: skippedRows,
+        totalProcessed: totalProcessed,
         sourceFilter: account.sourceFilter,
         formatType: hasWhatConverts ? "whatconverts" : "standard",
         columnCount: columnCount,
+        sheetCleared: shouldClearSheet,
+        isFirstTimeSync: isFirstTimeSync,
+        previousFormat: account.lastSheetsFormat,
+        currentFormat: currentFormat,
         sampleJobSources: [
           ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
         ],
@@ -1737,10 +1862,6 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
               j.Status
             )
           ).length,
-          totalConversionValue: values.reduce(
-            (sum, row) => sum + (row[hasWhatConverts ? 3 : 4] || 0),
-            0
-          ),
         },
       },
     });
