@@ -16,13 +16,15 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorIcon from '@mui/icons-material/Error';
 import { SyncHistory } from '../types/index';
 import { buildApiUrl } from '../utils/api';
+import { convertToAccountTimezone } from '../utils/timezone';
 
 interface SyncHistoryProps {
   accountId: string;
+  accountTimezone?: string;
   refreshTrigger?: number;
 }
 
-const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTrigger }) => {
+const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, accountTimezone = 'America/Los_Angeles', refreshTrigger }) => {
   const [syncHistory, setSyncHistory] = useState<SyncHistory[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>('');
@@ -69,18 +71,8 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
       return 'Unknown time';
     }
     try {
-    const date = new Date(timestamp);
-      if (isNaN(date.getTime())) {
-        return 'Invalid time';
-      }
-    return date.toLocaleString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
+      const timestampStr = typeof timestamp === 'string' ? timestamp : timestamp.toISOString();
+      return convertToAccountTimezone(timestampStr, accountTimezone, 'MMM dd, yyyy h:mm:ss a');
     } catch (error) {
       console.error('Error formatting timestamp:', error);
       return 'Error formatting time';
@@ -264,6 +256,44 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
               </Typography>
             </Box>
           )}
+          {sync.details.dateFilter && (
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'orange.50', borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight="bold" color="text.primary">
+                Date Filter:
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Enabled: {sync.details.dateFilter.enabled ? 'Yes' : 'No'}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Days back: {sync.details.dateFilter.daysBack}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Cutoff date: {new Date(sync.details.dateFilter.cutoffDate).toLocaleString()}
+              </Typography>
+            </Box>
+          )}
+          {sync.details.dateFieldStatistics && (
+            <Box sx={{ mt: 1, p: 1, bgcolor: 'purple.50', borderRadius: 1 }}>
+              <Typography variant="body2" fontWeight="bold" color="text.primary">
+                Date Field Statistics:
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs with CreatedDate: {sync.details.dateFieldStatistics.jobsWithCreatedDate}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs with LastStatusUpdate: {sync.details.dateFieldStatistics.jobsWithLastStatusUpdate}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs with both dates: {sync.details.dateFieldStatistics.jobsWithBothDates}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Jobs using fallback dates: {sync.details.dateFieldStatistics.jobsWithFallbackDates}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                Account timezone: {sync.details.dateFieldStatistics.accountTimezone}
+              </Typography>
+            </Box>
+          )}
         </Box>
       );
     }
@@ -300,7 +330,7 @@ const SyncHistoryComponent: React.FC<SyncHistoryProps> = ({ accountId, refreshTr
   return (
     <Box sx={{ mt: 2 }}>
       <Typography variant="h6" gutterBottom>
-        Sync History
+        Sync History (Last 10 Entries)
       </Typography>
       <List>
         {syncHistory.map((sync) => {

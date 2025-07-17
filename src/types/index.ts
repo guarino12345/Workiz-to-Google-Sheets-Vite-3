@@ -9,6 +9,7 @@ export interface Account {
   whatconvertsApiSecret?: string;
   sourceFilter: string[];
   defaultConversionValue: number;
+  timezone: string; // User's preferred timezone for display
   // New scheduling fields
   syncEnabled: boolean;
   syncFrequency: 'daily' | 'weekly' | 'monthly' | 'custom';
@@ -129,12 +130,24 @@ export interface SyncHistory {
       completed: number;
       cancelled: number;
     };
-    conversionValueLogic?: {
-      defaultValue: number;
-      jobsWithJobTotalPrice: number;
-      jobsWithCancelledStatus: number;
-      totalConversionValue: number;
-    };
+            conversionValueLogic?: {
+          defaultValue: number;
+          jobsWithJobTotalPrice: number;
+          jobsWithCancelledStatus: number;
+          totalConversionValue: number;
+        };
+        dateFieldStatistics?: {
+          jobsWithCreatedDate: number;
+          jobsWithLastStatusUpdate: number;
+          jobsWithBothDates: number;
+          jobsWithFallbackDates: number;
+          accountTimezone: string;
+        };
+        dateFilter?: {
+          enabled: boolean;
+          daysBack: number;
+          cutoffDate: string;
+        };
   };
   errorMessage?: string;
   createdAt?: Date;

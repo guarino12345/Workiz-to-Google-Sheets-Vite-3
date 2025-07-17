@@ -16,6 +16,7 @@ import {
 } from '@mui/material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
+import { timezoneOptions } from '../utils/timezone';
 
 interface AccountFormProps {
   onSuccess: () => void;
@@ -30,6 +31,7 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
     sourceFilter: [],
     defaultConversionValue: 0,
     name: '',
+    timezone: 'America/Los_Angeles', // Default to Pacific Time
     syncEnabled: false,
     syncFrequency: 'daily',
     syncTime: '09:00',
@@ -66,6 +68,7 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
         sourceFilter: [],
         defaultConversionValue: 0,
         name: '',
+        timezone: 'America/Los_Angeles',
         syncEnabled: false,
         syncFrequency: 'daily',
         syncTime: '09:00',
@@ -116,6 +119,21 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
         margin="normal"
         required
       />
+
+      <FormControl fullWidth margin="normal">
+        <InputLabel>Timezone</InputLabel>
+        <Select
+          value={formData.timezone || 'America/Los_Angeles'}
+          label="Timezone"
+          onChange={(e) => setFormData({ ...formData, timezone: e.target.value })}
+        >
+          {timezoneOptions.map((option) => (
+            <MenuItem key={option.value} value={option.value}>
+              {option.label}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
 
       <TextField
         fullWidth
@@ -198,47 +216,6 @@ const AccountForm: React.FC<AccountFormProps> = ({ onSuccess }) => {
           />
         </Box>
       )}
-
-      {/* Automated Sync Settings - DISABLED (Using Vercel Cron Job at 9am UTC)
-      <FormControlLabel
-        control={
-          <Switch
-            checked={formData.syncEnabled || false}
-            onChange={(e) => setFormData({ ...formData, syncEnabled: e.target.checked })}
-          />
-        }
-        label="Enable Automated Syncing"
-        sx={{ mb: 2 }}
-      />
-
-      {formData.syncEnabled && (
-        <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-          <FormControl sx={{ minWidth: 200, flex: 1 }}>
-            <InputLabel>Sync Frequency</InputLabel>
-            <Select
-              value={formData.syncFrequency || 'daily'}
-              label="Sync Frequency"
-              onChange={(e) => setFormData({ ...formData, syncFrequency: e.target.value as any })}
-            >
-              <MenuItem value="daily">Daily</MenuItem>
-              <MenuItem value="weekly">Weekly</MenuItem>
-              <MenuItem value="monthly">Monthly</MenuItem>
-              <MenuItem value="custom">Custom</MenuItem>
-            </Select>
-          </FormControl>
-          <TextField
-            sx={{ minWidth: 200, flex: 1 }}
-            label="Sync Time"
-            type="time"
-            value={formData.syncTime || '09:00'}
-            onChange={(e) => setFormData({ ...formData, syncTime: e.target.value })}
-            margin="normal"
-            InputLabelProps={{ shrink: true }}
-            helperText="Time to run sync (24-hour format)"
-          />
-        </Box>
-      )}
-      */}
 
       <Alert severity="info" sx={{ mb: 2 }}>
         <AlertTitle>Automated Sync</AlertTitle>

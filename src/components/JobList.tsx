@@ -31,6 +31,7 @@ import {
 } from '@mui/icons-material';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
+import { convertToAccountTimezone } from '../utils/timezone';
 import SyncHistoryComponent from './SyncHistory';
 
 interface Job {
@@ -933,6 +934,7 @@ const JobList: React.FC<JobListProps> = ({ accounts }) => {
           {selectedAccount.id && (
             <SyncHistoryComponent 
               accountId={selectedAccount.id} 
+              accountTimezone={selectedAccount.timezone}
               refreshTrigger={refreshSyncHistory}
             />
           )}

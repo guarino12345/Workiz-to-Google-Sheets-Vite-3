@@ -30,6 +30,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { Account } from '../types/index';
 import { buildApiUrl } from '../utils/api';
+import { timezoneOptions, getTimezoneLabel } from '../utils/timezone';
 
 interface AccountListProps {
   accounts: Account[];
@@ -95,6 +96,7 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
           whatconvertsApiKey: editingAccount.whatconvertsApiKey,
           whatconvertsApiSecret: editingAccount.whatconvertsApiSecret,
           defaultConversionValue: editingAccount.defaultConversionValue,
+          timezone: editingAccount.timezone,
           syncEnabled: editingAccount.syncEnabled,
           syncFrequency: editingAccount.syncFrequency,
           syncTime: editingAccount.syncTime,
@@ -244,6 +246,10 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
                   </Typography>
                   <br />
                   <Typography component="span" variant="body2" color="text.secondary">
+                    Timezone: {getTimezoneLabel(account.timezone || 'America/Los_Angeles')}
+                  </Typography>
+                  <br />
+                  <Typography component="span" variant="body2" color="text.secondary">
                     Auto Sync: {account.syncEnabled ? 'Enabled' : 'Disabled'}
                     {account.syncEnabled && ` (${account.syncFrequency} at ${account.syncTime})`}
                   </Typography>
@@ -286,6 +292,23 @@ const AccountList: React.FC<AccountListProps> = ({ accounts, onAccountsChange })
             onChange={handleGoogleSheetsIdChange}
             sx={{ mb: 2 }}
           />
+          <FormControl fullWidth margin="dense" sx={{ mb: 2 }}>
+            <InputLabel>Timezone</InputLabel>
+            <Select
+              value={editingAccount?.timezone || 'America/Los_Angeles'}
+              label="Timezone"
+              onChange={(e) => setEditingAccount(editingAccount ? {
+                ...editingAccount,
+                timezone: e.target.value
+              } : null)}
+            >
+              {timezoneOptions.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
           <TextField
             margin="dense"
             label="WhatConverts API Key (Optional)"

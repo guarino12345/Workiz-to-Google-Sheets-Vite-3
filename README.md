@@ -5,14 +5,19 @@ A React application that syncs Workiz job data with Google Sheets for Google Ads
 ## Features
 
 - **Account Management**: Create and manage multiple Workiz accounts
+- **Timezone Support**: Display job times in each account's preferred timezone
 - **Automated Scheduling**: Set up daily, weekly, monthly, or custom sync intervals
 - **Sync History**: Track all sync operations with detailed logs
 - **Manual Triggers**: Test sync functionality immediately
 - **Google Sheets Integration**: Automatic sync to Google Sheets for conversion tracking
+- **Date Filtering**: Process only recent jobs (last 30 days) for Google Sheets sync
 - **Real-time Monitoring**: View last sync dates and next scheduled syncs
 
 ## Recent Updates
 
+- ✅ **Date Filtering**: Google Sheets sync now processes only jobs from the last 30 days
+- ✅ Enhanced Google Sheets sync with improved date field mapping
+- ✅ Timezone support for displaying job times in account's preferred timezone
 - ✅ Automated scheduling with Vercel cron jobs
 - ✅ Comprehensive sync history tracking
 - ✅ Manual trigger functionality for testing
@@ -81,6 +86,38 @@ A React application that syncs Workiz job data with Google Sheets for Google Ads
 - [ ] Implement error logging
 - [ ] Add sync statistics
 - [ ] Finalize dashboard UI/UX
+
+## Timezone Support
+
+### Timezone Configuration
+- **Account-Level Timezones**: Each account can have its own timezone preference
+- **Display Conversion**: Job times are displayed in the account's preferred timezone
+- **Data Integrity**: Original Workiz timestamps are preserved in the database
+- **Supported Timezones**: Pacific, Mountain, Central, Eastern, Alaska, and Hawaii Time
+
+### Timezone Features
+- **Job Display**: All job times shown in account's local timezone
+- **Sync History**: Sync timestamps displayed in account timezone
+- **Business Logic**: Filtering and reporting based on local business hours
+- **Default Timezone**: Pacific Time (America/Los_Angeles) for new accounts
+
+## Google Sheets Integration
+
+### Date Field Mapping
+- **WhatConverts Format**: Uses `LastStatusUpdate` for Conversion Time (in account timezone)
+- **Standard Format**: Uses `CreatedDate` for Call Start Time and `LastStatusUpdate` for Conversion Time (in account timezone)
+- **Timezone Conversion**: All dates converted to account's preferred timezone
+- **Fallback Logic**: Uses `CreatedDate` as fallback if `LastStatusUpdate` is missing
+
+### Data Formats
+- **WhatConverts Format (5 columns)**: `[Google Click ID, Conversion Name, Conversion Time, Conversion Value, Conversion Currency]`
+- **Standard Format (6 columns)**: `[Phone Number, Call Start Time, Conversion Name, Conversion Time, Conversion Value, Conversion Currency]`
+
+### Smart Row Management
+- **Duplicate Prevention**: Uses GCLID (WhatConverts) or Phone Number (Standard) as unique identifiers
+- **Update Existing**: Updates rows that already exist in the sheet
+- **Append New**: Adds new rows for jobs not in the sheet
+- **Format Detection**: Automatically detects and handles format changes
 
 ## API Integration
 
@@ -157,6 +194,7 @@ The app will be available at `http://localhost:5173`
   - Default conversion values
   - Source filters
   - Google Sheets IDs
+  - Timezone preferences
 
 - `syncs` - Sync history and status
 

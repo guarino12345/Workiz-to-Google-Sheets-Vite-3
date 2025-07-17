@@ -423,6 +423,7 @@ app.post("/api/accounts", async (req, res) => {
     const db = await ensureDbConnection();
     const accountData = {
       ...req.body,
+      timezone: req.body.timezone ?? "America/Los_Angeles", // Default timezone
       syncEnabled: false, // Disabled by default - using Vercel cron jobs instead
       syncFrequency: req.body.syncFrequency ?? "daily",
       syncTime: req.body.syncTime ?? "09:00",
@@ -538,7 +539,7 @@ app.get("/api/sync-history/:accountId", async (req, res) => {
         $or: [{ accountId: accountId }, { accountId: new ObjectId(accountId) }],
       })
       .sort({ timestamp: -1 })
-      .limit(50) // Limit to last 50 sync records
+      .limit(10) // Limit to last 10 sync records
       .toArray();
 
     // Transform _id to id for frontend
@@ -1349,13 +1350,21 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
 
     console.log(`📄 Google Sheet ID: ${account.googleSheetsId}`);
 
-    // Get all jobs for this account
+    // Calculate date filter - only process jobs from last 30 days
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    // Get jobs for this account from last 30 days
     const allJobs = await db
       .collection("jobs")
-      .find({ accountId: account._id || account.id })
+      .find({ 
+        accountId: account._id || account.id,
+        JobDateTime: { $gte: thirtyDaysAgo.toISOString() }
+      })
       .toArray();
 
-    console.log(`📊 Found ${allJobs.length} total jobs for account`);
+    console.log(`📊 Found ${allJobs.length} jobs from last 30 days for account`);
+    console.log(`📅 Date filter: jobs since ${thirtyDaysAgo.toISOString()}`);
 
     // Filter jobs by sourceFilter
     let filteredJobs = allJobs;
@@ -1594,12 +1603,29 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
     const appendBatches = [];
 
     for (const job of filteredJobs) {
-      const formattedTime =
-        formatInTimeZone(
-          new Date(job.JobDateTime),
-          "America/Los_Angeles",
-          "yyyy-MM-dd'T'HH:mm:ss"
-        ) + " America/Los_Angeles";
+      // Helper function to format date in account timezone
+      const formatDateInAccountTimezone = (dateString, fallbackDateString = null) => {
+        try {
+          const dateToUse = dateString || fallbackDateString || job.JobDateTime;
+          if (!dateToUse) {
+            console.warn(`⚠️ No valid date found for job ${job.UUID}`);
+            return "";
+          }
+          
+          return formatInTimeZone(
+            new Date(dateToUse),
+            account.timezone || "America/Los_Angeles",
+            "yyyy-MM-dd'T'HH:mm:ss"
+          ) + ` ${account.timezone || "America/Los_Angeles"}`;
+        } catch (error) {
+          console.error(`❌ Error formatting date for job ${job.UUID}:`, error);
+          return "";
+        }
+      };
+
+      // Format dates in account timezone
+      const callStartTime = formatDateInAccountTimezone(job.CreatedDate);
+      const conversionTime = formatDateInAccountTimezone(job.LastStatusUpdate, job.CreatedDate);
 
       // Conversion value logic
       let conversionValue = account.defaultConversionValue || 0;
@@ -1621,7 +1647,7 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         rowData = [
           job.gclid || "", // Google Click ID
           "Google Ads Convert", // Conversion Name
-          formattedTime, // Conversion Time
+          conversionTime, // Conversion Time (LastStatusUpdate in account timezone)
           conversionValue, // Conversion Value
           "USD", // Conversion Currency
         ];
@@ -1629,9 +1655,9 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
       } else {
         rowData = [
           job.Phone || "", // Phone Number
-          formattedTime, // Call Start Time
+          callStartTime, // Call Start Time (CreatedDate in account timezone)
           "Google Ads Convert", // Conversion Name
-          formattedTime, // Conversion Time
+          conversionTime, // Conversion Time (LastStatusUpdate in account timezone)
           conversionValue, // Conversion Value
           "USD", // Conversion Currency
         ];
@@ -1658,6 +1684,21 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         skippedRows++;
       }
     }
+
+    // Log date field statistics
+    const dateFieldStats = {
+      jobsWithCreatedDate: filteredJobs.filter(j => j.CreatedDate).length,
+      jobsWithLastStatusUpdate: filteredJobs.filter(j => j.LastStatusUpdate).length,
+      jobsWithBothDates: filteredJobs.filter(j => j.CreatedDate && j.LastStatusUpdate).length,
+      jobsWithFallbackDates: filteredJobs.filter(j => !j.CreatedDate || !j.LastStatusUpdate).length,
+    };
+    
+    console.log(`📅 Date field statistics:`);
+    console.log(`   - Jobs with CreatedDate: ${dateFieldStats.jobsWithCreatedDate}/${filteredJobs.length}`);
+    console.log(`   - Jobs with LastStatusUpdate: ${dateFieldStats.jobsWithLastStatusUpdate}/${filteredJobs.length}`);
+    console.log(`   - Jobs with both dates: ${dateFieldStats.jobsWithBothDates}/${filteredJobs.length}`);
+    console.log(`   - Jobs using fallback dates: ${dateFieldStats.jobsWithFallbackDates}/${filteredJobs.length}`);
+    console.log(`   - Account timezone: ${account.timezone || 'America/Los_Angeles'}`);
 
     console.log(
       `📊 Processing summary: ${updatedRows} updates, ${newRows} new rows, ${skippedRows} skipped`
@@ -1742,6 +1783,11 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         isFirstTimeSync: isFirstTimeSync,
         previousFormat: account.lastSheetsFormat,
         currentFormat: currentFormat,
+        dateFilter: {
+          enabled: true,
+          daysBack: 30,
+          cutoffDate: thirtyDaysAgo.toISOString(),
+        },
         whatconvertsStats: hasWhatConverts
           ? {
               jobsWithGclid: jobsWithGclid,
@@ -1773,6 +1819,13 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
             )
           ).length,
         },
+        dateFieldStatistics: {
+          jobsWithCreatedDate: dateFieldStats.jobsWithCreatedDate,
+          jobsWithLastStatusUpdate: dateFieldStats.jobsWithLastStatusUpdate,
+          jobsWithBothDates: dateFieldStats.jobsWithBothDates,
+          jobsWithFallbackDates: dateFieldStats.jobsWithFallbackDates,
+          accountTimezone: account.timezone || 'America/Los_Angeles',
+        },
       },
     };
 
@@ -1784,6 +1837,7 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
     console.log(
       `📊 Google Sheets sync summary for ${account.name} (${accountDuration}ms):`
     );
+    console.log(`   - Date filter: Last 30 days (since ${thirtyDaysAgo.toISOString()})`);
     console.log(`   - Total jobs: ${allJobs.length}`);
     console.log(`   - Filtered jobs: ${filteredJobs.length}`);
     console.log(`   - Updated rows: ${updatedRows}`);
@@ -1828,6 +1882,11 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
         isFirstTimeSync: isFirstTimeSync,
         previousFormat: account.lastSheetsFormat,
         currentFormat: currentFormat,
+        dateFilter: {
+          enabled: true,
+          daysBack: 30,
+          cutoffDate: thirtyDaysAgo.toISOString(),
+        },
         sampleJobSources: [
           ...new Set(filteredJobs.slice(0, 5).map((job) => job.JobSource)),
         ],
@@ -1862,6 +1921,13 @@ app.post("/api/sync-to-sheets/:accountId", async (req, res) => {
               j.Status
             )
           ).length,
+        },
+        dateFieldStatistics: {
+          jobsWithCreatedDate: dateFieldStats.jobsWithCreatedDate,
+          jobsWithLastStatusUpdate: dateFieldStats.jobsWithLastStatusUpdate,
+          jobsWithBothDates: dateFieldStats.jobsWithBothDates,
+          jobsWithFallbackDates: dateFieldStats.jobsWithFallbackDates,
+          accountTimezone: account.timezone || 'America/Los_Angeles',
         },
       },
     });
